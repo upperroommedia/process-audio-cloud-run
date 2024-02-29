@@ -1,0 +1,38 @@
+{
+  "name": "youtube-download-speed-test",
+  "description": "Runs a speed test to see how fast a youtube video can be downloaded on cloud run",
+  "version": "1.0.0",
+  "private": true,
+  "main": "dist/index",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node ./dist/index.js",
+    "build": "pnpm tsc"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "Google LLC",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@google-cloud/storage": "^7.7.0",
+    "axios": "^1.6.7",
+    "express": "^4.18.2",
+    "ffmpeg-static": "^5.2.0",
+    "ffprobe-static": "^3.1.0",
+    "firebase-admin": "^12.0.0",
+    "path": "^0.12.7",
+    "typescript": "^4.9.5"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^20.11.22",
+    "@typescript-eslint/eslint-plugin": "^4.12.0",
+    "@typescript-eslint/parser": "^4.12.0",
+    "eslint": "^7.17.0",
+    "eslint-config-prettier": "^7.1.0",
+    "eslint-plugin-prettier": "^3.1.2",
+    "eslint-plugin-typescript": "^0.14.0",
+    "prettier": "^2.2.1"
+  }
+}

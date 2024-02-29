@@ -1,0 +1,33 @@
+{
+  "compilerOptions": {
+    "allowJs": false,
+    "lib": ["DOM", "ES5"],
+    "module": "CommonJS",
+    "moduleResolution": "node",
+    "target": "ESNext",
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "pretty": true,
+    "strict": true,
+    "sourceMap": true,
+    "inlineSources": true,
+    "sourceRoot": "/",
+    "outDir": "./dist",
+    "skipLibCheck": true,
+    "noImplicitAny": false,
+    "esModuleInterop": true,
+    "declaration": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@app/*": ["src/*"],
+      "@utils/*": ["src/utils/*"],
+      "@test/*": ["test/*"],
+      "@types": ["src/types"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["*.test.ts"],
+  "compileOnSave": false
+}
