@@ -12,18 +12,32 @@ This service processes audio for the Upper Room Media Uploader
 
 1. Make sure you start docker on your machine (open docker from apps)
 2. Run `docker build --tag process-audio .` to build the process-audio image
-3. Run `docker run --publish 8080:8080 process-audio` to run the image with access to the 8080 port
+3. Run
+
+```
+docker run \
+-e GOOGLE_APPLICATION_CREDENTIALS=/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-395dfcef08.json \
+-v $GOOGLE_APPLICATION_CREDENTIALS:/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-395dfcef08.json:ro \
+--publish 8080:8080 \
+process-audio
+```
+
+to run the image with access to the 8080 port. Replace the path of the Credentials with the appropriate path
 
 ## Deploying to Google Cloud Run
 
 1. Build the Docker image:
 
 ```
+
 gcloud builds submit --tag gcr.io/urm-app/process-audio
+
 ```
 
 2. Deploy the image:
 
 ```
+
 gcloud run deploy process-audio --image gcr.io/urm-app/process-audio --region us-central1
+
 ```
