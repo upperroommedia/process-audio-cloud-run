@@ -35,7 +35,7 @@ console.log("Loading ffmpeg");
 const ffmpeg = loadStaticFFMPEG();
 
 app.get("/", (req, res) => {
-  console.log("GET /", "Process Audio Running version 1.0.0");
+  console.log("GET /", "Process Audio Running version 1.0.1");
   res.send(`
   Process Audio Running version 1.0.0
   Post to /process-audio with data in the format of
