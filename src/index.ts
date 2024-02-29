@@ -107,6 +107,7 @@ app.post(
         cancelToken.cancel,
         timeoutMillis
       );
+      res.status(200).send();
     } catch (e) {
       let message = "Something Went Wrong";
       if (e instanceof Error) {
@@ -129,6 +130,7 @@ app.post(
         console.error("Error Updating Document with docRef", docRef.path);
       }
       console.error("Error", e);
+      res.status(500).send(message);
     } finally {
       await logMemoryUsage("Final Memory Usage:");
     }
