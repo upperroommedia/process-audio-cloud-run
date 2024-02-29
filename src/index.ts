@@ -53,14 +53,15 @@ app.get("/", (req, res) => {
 
 app.post(
   "/process-audio",
-  async (request: Request<{}, {}, ProcessAudioInputType>, res) => {
+  async (request: Request<{}, {}, { data: ProcessAudioInputType }>, res) => {
     const timeoutMillis = (TIMEOUT_SECONDS - 30) * 1000; // 30s less than timeoutSeconds
     // set timeout to 30 seconds less than timeoutSeconds then throw error if it takes longer than that
-    const data = request.body;
-    console.log("POST /process-audio", data);
+    console.log("POST /process-audio", request.body);
+
+    const data = request.body?.data;
 
     // data checks
-    if (!validateAddIntroOutroData(data)) {
+    if (!data || !validateAddIntroOutroData(data)) {
       res.status(400).send(
         `Invalid body: boyd must be an object with the following field: 
          id (string),

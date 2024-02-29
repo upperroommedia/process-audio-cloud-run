@@ -61,9 +61,11 @@ curl \
 -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
 https://process-audio-yshbijirxq-uc.a.run.app/process-audio \
 -d '{
-                "id": "9104375d-eebf-49ab-9d8e-9e7cdff85be4",
+    "data":{
+                "id": "ID",
                 "youtubeUrl": "https://www.youtube.com/watch?v=MUIw7qrSW6k",
                 "startTime": 5155,
                 "duration": 1320
+            }
 }'
 ```
