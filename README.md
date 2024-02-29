@@ -29,17 +29,13 @@ to run the image with access to the 8080 port. Replace the path of the Credentia
 1. Build the Docker image:
 
 ```
-
 gcloud builds submit --tag gcr.io/urm-app/process-audio
-
 ```
 
 2. Deploy the image:
 
 ```
-
 gcloud run deploy process-audio --image gcr.io/urm-app/process-audio --region us-central1
-
 ```
 
 ## Test

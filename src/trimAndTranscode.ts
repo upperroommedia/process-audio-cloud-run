@@ -36,6 +36,7 @@ const trimAndTranscode = async (
   const writeStream = outputFile.createWriteStream({
     contentType: "audio/mpeg",
     metadata: { contentDisposition, metadata: customMetadata },
+    timeout: 30 * 60 * 1000, // 30 minutes in milliseconds
   });
   let inputSource: string | Readable;
   let ytdlp: ChildProcessWithoutNullStreams;
