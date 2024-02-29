@@ -41,3 +41,19 @@ gcloud builds submit --tag gcr.io/urm-app/process-audio
 gcloud run deploy process-audio --image gcr.io/urm-app/process-audio --region us-central1
 
 ```
+
+## Test
+
+```
+curl \
+-X POST \
+-H 'Content-Type: application/json' \
+-H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+https://process-audio-yshbijirxq-uc.a.run.app/process-audio \
+-d '{
+                "id": "9104375d-eebf-49ab-9d8e-9e7cdff85be4",
+                "youtubeUrl": "https://www.youtube.com/watch?v=MUIw7qrSW6k",
+                "startTime": 5155,
+                "duration": 1320
+}'
+```

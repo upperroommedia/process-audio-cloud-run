@@ -1,4 +1,4 @@
-export const TIMEOUT_SECONDS = 60; // 30 minutes
+export const TIMEOUT_SECONDS = 3600; // 30 minutes
 
 // Copied from web-app/constants/storage_constants.ts
 export const PROCESSED_SERMONS_BUCKET = "processed-sermons";
