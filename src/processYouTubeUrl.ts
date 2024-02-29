@@ -1,3 +1,5 @@
+import { CancelToken } from "./CancelToken";
+import { YouTubeUrl } from "./types";
 import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { Writable } from "stream";
 
@@ -8,14 +10,18 @@ function extractPercent(line: string): number | null {
 
 export const processYouTubeUrl = (
   ytdlpPath: string,
-  url: string,
+  url: YouTubeUrl,
+  cancelToken: CancelToken,
   passThrough: Writable,
   updateProgressCallback: (progress: number) => void
 ): ChildProcessWithoutNullStreams => {
   console.log("Streaming audio from youtube video:", url);
+  if (cancelToken.isCancellationRequested) {
+    throw new Error("getYouTubeStream operation was cancelled");
+  }
   let totalBytes = 0;
   //pipes output to stdout
-  const args = ["-f", "bestaudio", "-N 4", "-o", "-", "--verbose"];
+  const args = ["-f", "bestaudio", "-N 4", "-o", "-"];
   args.push(url);
 
   // Log the actual command
@@ -25,7 +31,7 @@ export const processYouTubeUrl = (
 
   ytdlp.on("error", (err) => {
     console.error("ytdlp Error:", err);
-    throw new Error(`getYoutubeStream error, ${err}`);
+    throw new Error(`getYoutubeStream error ${err}`);
   });
 
   ytdlp.on("close", (code) => {
@@ -53,6 +59,9 @@ export const processYouTubeUrl = (
   });
 
   ytdlp.stderr?.on("data", (data) => {
+    if (cancelToken.isCancellationRequested) {
+      throw new Error("getYouTubeStream operation was cancelled");
+    }
     if (data.includes("download")) {
       const percent = extractPercent(data.toString());
       if (percent) {
