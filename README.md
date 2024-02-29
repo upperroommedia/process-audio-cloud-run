@@ -44,6 +44,16 @@ gcloud run deploy process-audio --image gcr.io/urm-app/process-audio --region us
 
 ## Test
 
+GET
+
+```
+curl \
+-H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+https://process-audio-yshbijirxq-uc.a.run.app
+```
+
+POST
+
 ```
 curl \
 -X POST \
