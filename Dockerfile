@@ -2,7 +2,7 @@
 # https://docs.docker.com/go/dockerfile-reference/
 
 # Use an argument to specify the Node.js version
-ARG NODE_VERSION=16.14.0
+ARG NODE_VERSION=18.12.0
 ARG PNPM_VERSION=6.32.3
 
 # Build stage
