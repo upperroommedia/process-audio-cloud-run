@@ -1,6 +1,6 @@
 {
-  "name": "youtube-download-speed-test",
-  "description": "Runs a speed test to see how fast a youtube video can be downloaded on cloud run",
+  "name": "process-audio-cloud-run",
+  "description": "Processes audio files (both uploaded and from Youtube) for the upper room media uploader",
   "version": "1.0.0",
   "private": true,
   "main": "dist/index",
@@ -10,7 +10,7 @@
     "build": "pnpm tsc"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "author": "Google LLC",
   "license": "Apache-2.0",
