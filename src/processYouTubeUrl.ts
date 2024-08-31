@@ -21,7 +21,7 @@ export const processYouTubeUrl = (
   }
   let totalBytes = 0;
   //pipes output to stdout
-  const args = ["-f", "bestaudio", "-N 4", "-o", "-"];
+  const args = ["-f", "bestaudio", "-N 4", "--no-playlist", "-o", "-"];
   args.push(url);
 
   // Log the actual command
@@ -38,9 +38,7 @@ export const processYouTubeUrl = (
     console.log("ytdlp spawn closed with code", code);
     if (code && code !== 0) {
       console.error("Spawn closed with non-zero code of:", code);
-      throw new Error(
-        "Spawn closed with non-zero error code. Please check logs for more information."
-      );
+      throw new Error("Spawn closed with non-zero error code. Please check logs for more information.");
     }
   });
 
