@@ -6,13 +6,7 @@ import { Database } from "firebase-admin/database";
 import { DocumentReference, Firestore } from "firebase-admin/firestore";
 import { CustomMetadata, FilePaths, AudioSource } from "./types";
 import { CancelToken } from "./CancelToken";
-import {
-  logMemoryUsage,
-  secondsToTimeFormat,
-  downloadFiles,
-  getDurationSeconds,
-  createTempFile,
-} from "./utils";
+import { logMemoryUsage, secondsToTimeFormat, downloadFiles, getDurationSeconds, createTempFile } from "./utils";
 import trimAndTranscode from "./trimAndTranscode";
 import mergeFiles from "./mergeFiles";
 import { PROCESSED_SERMONS_BUCKET } from "./consts";
@@ -44,9 +38,7 @@ export const processAudio = async (
   let docFound = false;
   let title = "untitled";
   while (currentTry < maxTries) {
-    console.log(
-      `Checking if document exists attempt: ${currentTry + 1}/${maxTries}`
-    );
+    console.log(`Checking if document exists attempt: ${currentTry + 1}/${maxTries}`);
     const doc = await docRef.get();
 
     if (doc.exists) {
@@ -101,9 +93,7 @@ export const processAudio = async (
     });
     if (skipTranscode) {
       if (audioSource.type !== "StorageFilePath") {
-        throw new Error(
-          "Audio source must be a file from processed-sermons in order to trim without transcoding"
-        );
+        throw new Error("Audio source must be a file from processed-sermons in order to trim without transcoding");
       }
       await trim(
         ffmpeg,
@@ -136,16 +126,11 @@ export const processAudio = async (
     }
 
     // download processed audio for merging
-    const processedFilePath = createTempFile(
-      `processed-${fileName}`,
-      tempFiles
-    );
+    const processedFilePath = createTempFile(`processed-${fileName}`, tempFiles);
     console.log("Downloading processed audio to", processedFilePath);
     const [tempFilePaths] = await Promise.all([
       await downloadFiles(bucket, audioFilesToMerge, tempFiles),
-      await bucket
-        .file(processedStoragePath)
-        .download({ destination: processedFilePath }),
+      await bucket.file(processedStoragePath).download({ destination: processedFilePath }),
     ]);
     console.log("Successfully downloaded processed audio");
     //create merge array in order INTRO, CONTENT, OUTRO
@@ -157,14 +142,9 @@ export const processAudio = async (
     // use reduce to sum up all the durations of the files from filepaths
     const durationSeconds = (
       await Promise.all(
-        [tempFilePaths.INTRO, tempFilePaths.OUTRO].map(async (path) =>
-          path ? await getDurationSeconds(path) : 0
-        )
+        [tempFilePaths.INTRO, tempFilePaths.OUTRO].map(async (path) => (path ? await getDurationSeconds(path) : 0))
       )
-    ).reduce(
-      (accumulator, currentValue) => accumulator + currentValue,
-      duration
-    );
+    ).reduce((accumulator, currentValue) => accumulator + currentValue, duration);
 
     customMetadata.duration = durationSeconds;
     console.log("Total Duration", secondsToTimeFormat(durationSeconds));
@@ -214,9 +194,7 @@ export const processAudio = async (
     // delete original audio file
     if (cancelToken.isCancellationRequested) return;
     if (audioSource.type === "StorageFilePath") {
-      const [originalFileExists] = await bucket
-        .file(audioSource.source)
-        .exists();
+      const [originalFileExists] = await bucket.file(audioSource.source).exists();
       if (originalFileExists && deleteOriginal) {
         console.log("Deleting original audio file", audioSource.source);
         await bucket.file(audioSource.source).delete();
@@ -225,6 +203,8 @@ export const processAudio = async (
     }
 
     console.log("Files have been merged succesfully");
+  } catch (error) {
+    throw error;
   } finally {
     await realtimeDB.ref(`addIntroOutro/${fileName}`).remove();
     const promises: Promise<void>[] = [];
