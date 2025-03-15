@@ -131,5 +131,5 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
 
 const port = parseInt(process.env.PORT ?? '') || 8080;
 app.listen(port, () => {
-  console.log(`Youtube Speed Test: listening on port ${port}`);
+  console.log(`Process Audio Service running on port: ${port}`);
 });

@@ -31,14 +31,17 @@ export const processYouTubeUrl = (
 
   ytdlp.on('error', (err) => {
     console.error('ytdlp Error:', err);
-    throw new Error(`getYoutubeStream error ${err}`);
+    passThrough.emit('error', new Error(`getYoutubeStream error ${err}`));
   });
 
   ytdlp.on('close', (code) => {
     console.log('ytdlp spawn closed with code', code);
     if (code && code !== 0) {
       console.error('Spawn closed with non-zero code of:', code);
-      throw new Error('Spawn closed with non-zero error code. Please check logs for more information.');
+      passThrough.emit(
+        'error',
+        new Error('Spawn closed with non-zero error code. Please check logs for more information.')
+      );
     }
   });
 
@@ -53,12 +56,13 @@ export const processYouTubeUrl = (
 
   ytdlp.stderr?.on('error', (err) => {
     console.error('ytdlp stderr Error:', err);
-    throw new Error(`getYoutubeStream error: ${err}`);
+    passThrough.emit('error', new Error(`getYoutubeStream error: ${err}`));
   });
 
   ytdlp.stderr?.on('data', (data) => {
     if (cancelToken.isCancellationRequested) {
-      throw new Error('getYouTubeStream operation was cancelled');
+      passThrough.emit('error', new Error('getYouTubeStream operation was cancelled'));
+      return;
     }
     if (data.includes('download')) {
       const percent = extractPercent(data.toString());
@@ -68,7 +72,8 @@ export const processYouTubeUrl = (
       }
     }
     if (data.toString().includes('ERROR')) {
-      throw new Error(data.toString());
+      passThrough.emit('error', new Error(data.toString()));
+      return;
     }
     console.debug('ytdlp stderr:', data.toString());
   });
