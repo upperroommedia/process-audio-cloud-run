@@ -2,6 +2,8 @@ import { CancelToken } from './CancelToken';
 import { YouTubeUrl } from './types';
 import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { Writable } from 'stream';
+import fs from 'fs';
+import path from 'path';
 
 function extractPercent(line: string): number | null {
   const percentMatch = line.match(/(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)%/);
@@ -20,8 +22,31 @@ export const processYouTubeUrl = (
     throw new Error('getYouTubeStream operation was cancelled');
   }
   let totalBytes = 0;
+  const cookiesFilePath = path.join(__dirname, 'cookies.txt');
+
+  // Check if cookies.txt exists
+  if (!fs.existsSync(cookiesFilePath)) {
+    if (process.env.COOKIES) {
+      try {
+        // Decode the base64 encoded cookies string
+        const decodedCookies = Buffer.from(process.env.COOKIES, 'base64').toString('utf8');
+
+        // Write the decoded contents to cookies.txt
+        fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
+        console.log('cookies.txt file created from COOKIES environment variable.');
+      } catch (err) {
+        console.error('Failed to decode and write cookies file:', err);
+        process.exit(1);
+      }
+    } else {
+      console.error('No cookies.txt file found and COOKIES environment variable is not set.');
+      process.exit(1);
+    }
+  } else {
+    console.log('cookies.txt file already exists.');
+  }
   //pipes output to stdout
-  const args = ['-f', 'bestaudio', '-N 4', '--no-playlist', '-o', '-'];
+  const args = ['--cookies', cookiesFilePath, '-f', 'bestaudio', '-N 4', '--no-playlist', '-o', '-'];
   args.push(url);
 
   // Log the actual command

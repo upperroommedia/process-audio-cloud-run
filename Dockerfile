@@ -53,6 +53,9 @@ COPY ./bin ./bin
 # Set the executable permission on the binaries
 RUN chmod +x ./bin/*
 
+# Change ownership of the entire working directory so the node user can write to it
+RUN chown -R node:node /usr/src/app
+
 # Run the application as a non-root user for security
 USER node
 

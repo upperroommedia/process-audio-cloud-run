@@ -18,6 +18,7 @@ This service processes audio for the Upper Room Media Uploader
 docker run \
 -e GOOGLE_APPLICATION_CREDENTIALS="/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json" \
 -v /Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json:/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json \
+--env-file .env \
 -p 8080:8080 \
 process-audio
 ```
