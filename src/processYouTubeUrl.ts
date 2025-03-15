@@ -1,7 +1,7 @@
-import { CancelToken } from "./CancelToken";
-import { YouTubeUrl } from "./types";
-import { ChildProcessWithoutNullStreams, spawn } from "node:child_process";
-import { Writable } from "stream";
+import { CancelToken } from './CancelToken';
+import { YouTubeUrl } from './types';
+import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
+import { Writable } from 'stream';
 
 function extractPercent(line: string): number | null {
   const percentMatch = line.match(/(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)%/);
@@ -15,62 +15,65 @@ export const processYouTubeUrl = (
   passThrough: Writable,
   updateProgressCallback: (progress: number) => void
 ): ChildProcessWithoutNullStreams => {
-  console.log("Streaming audio from youtube video:", url);
+  console.log('Streaming audio from youtube video:', url);
   if (cancelToken.isCancellationRequested) {
-    throw new Error("getYouTubeStream operation was cancelled");
+    throw new Error('getYouTubeStream operation was cancelled');
   }
   let totalBytes = 0;
   //pipes output to stdout
-  const args = ["-f", "bestaudio", "-N 4", "--no-playlist", "-o", "-"];
+  const args = ['-f', 'bestaudio', '-N 4', '--no-playlist', '-o', '-'];
   args.push(url);
 
   // Log the actual command
-  const command = `${ytdlpPath} ${args.join(" ")}`;
-  console.log("Executing command:", JSON.stringify(command));
+  const command = `${ytdlpPath} ${args.join(' ')}`;
+  console.log('Executing command:', JSON.stringify(command));
   const ytdlp = spawn(ytdlpPath, args);
 
-  ytdlp.on("error", (err) => {
-    console.error("ytdlp Error:", err);
+  ytdlp.on('error', (err) => {
+    console.error('ytdlp Error:', err);
     throw new Error(`getYoutubeStream error ${err}`);
   });
 
-  ytdlp.on("close", (code) => {
-    console.log("ytdlp spawn closed with code", code);
+  ytdlp.on('close', (code) => {
+    console.log('ytdlp spawn closed with code', code);
     if (code && code !== 0) {
-      console.error("Spawn closed with non-zero code of:", code);
-      throw new Error("Spawn closed with non-zero error code. Please check logs for more information.");
+      console.error('Spawn closed with non-zero code of:', code);
+      throw new Error('Spawn closed with non-zero error code. Please check logs for more information.');
     }
   });
 
-  ytdlp.on("exit", () => {
-    console.log("ytdlp spawn exited");
+  ytdlp.on('exit', () => {
+    console.log('ytdlp spawn exited');
   });
 
-  ytdlp.stdout.on("end", () => {
-    console.log("ytdlp stdout ended");
-    console.log("Number of MB streamed", totalBytes / (1024 * 1024));
+  ytdlp.stdout.on('end', () => {
+    console.log('ytdlp stdout ended');
+    console.log('Number of MB streamed', totalBytes / (1024 * 1024));
   });
 
-  ytdlp.stderr?.on("error", (err) => {
-    console.error("ytdlp stderr Error:", err);
+  ytdlp.stderr?.on('error', (err) => {
+    console.error('ytdlp stderr Error:', err);
     throw new Error(`getYoutubeStream error: ${err}`);
   });
 
-  ytdlp.stderr?.on("data", (data) => {
+  ytdlp.stderr?.on('data', (data) => {
     if (cancelToken.isCancellationRequested) {
-      throw new Error("getYouTubeStream operation was cancelled");
+      throw new Error('getYouTubeStream operation was cancelled');
     }
-    if (data.includes("download")) {
+    if (data.includes('download')) {
       const percent = extractPercent(data.toString());
       if (percent) {
         // update progress only when transcoding has not started
         updateProgressCallback(percent);
       }
     }
-    console.debug("ytdlp stderr:", data.toString());
+    if (data.toString().includes('ERROR')) {
+      throw new Error(data.toString());
+    }
+    console.debug('ytdlp stderr:', data.toString());
   });
 
-  ytdlp.stdout?.on("data", (data) => {
+  ytdlp.stdout?.on('data', (data) => {
     totalBytes += data.length;
   });
 
