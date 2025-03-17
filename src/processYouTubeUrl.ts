@@ -4,19 +4,21 @@ import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { Writable } from 'stream';
 import fs from 'fs';
 import path from 'path';
+import { Database } from 'firebase-admin/database';
 
 function extractPercent(line: string): number | null {
   const percentMatch = line.match(/(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)%/);
   return percentMatch ? parseFloat(percentMatch[1]) : null;
 }
 
-export const processYouTubeUrl = (
+export const processYouTubeUrl = async (
   ytdlpPath: string,
   url: YouTubeUrl,
   cancelToken: CancelToken,
   passThrough: Writable,
-  updateProgressCallback: (progress: number) => void
-): ChildProcessWithoutNullStreams => {
+  updateProgressCallback: (progress: number) => void,
+  realtimeDB: Database
+): Promise<ChildProcessWithoutNullStreams> => {
   console.log('Streaming audio from youtube video:', url);
   if (cancelToken.isCancellationRequested) {
     throw new Error('getYouTubeStream operation was cancelled');
@@ -24,29 +26,30 @@ export const processYouTubeUrl = (
   let totalBytes = 0;
   const cookiesFilePath = path.join(__dirname, 'cookies.txt');
 
-  // Check if cookies.txt exists
-  if (!fs.existsSync(cookiesFilePath)) {
-    if (process.env.COOKIES) {
-      try {
-        // Decode the base64 encoded cookies string
-        const decodedCookies = Buffer.from(process.env.COOKIES, 'base64').toString('utf8');
+  const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
+  const encodedCookies = await cookiesPath.get();
+  if (encodedCookies.exists()) {
+    try {
+      // Decode the base64 encoded cookies string
+      const decodedCookies = Buffer.from(encodedCookies.val(), 'base64').toString('utf8');
 
-        // Write the decoded contents to cookies.txt
-        fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
-        console.log('cookies.txt file created from COOKIES environment variable.');
-      } catch (err) {
-        console.error('Failed to decode and write cookies file:', err);
-        process.exit(1);
-      }
-    } else {
-      console.error('No cookies.txt file found and COOKIES environment variable is not set.');
+      // Write the decoded contents to cookies.txt
+      fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
+      console.log('cookies.txt file created from yt-dlp-cookies realtimeDB variable.');
+    } catch (err) {
+      console.error('Failed to decode and write cookies file:', err);
       process.exit(1);
     }
   } else {
-    console.log('cookies.txt file already exists.');
+    console.error('Could not find yt-dlp-cookies in the realtimeDB');
+    process.exit(1);
   }
+
   //pipes output to stdout
   const args = ['--cookies', cookiesFilePath, '-f', 'bestaudio', '-N 4', '--no-playlist', '-o', '-'];
+  if (encodedCookies.exists()) {
+    args.push('--cookies', cookiesFilePath);
+  }
   args.push(url);
 
   // Log the actual command
