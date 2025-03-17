@@ -32,11 +32,15 @@ fi
 echo "Extracting YouTube cookies from Chrome..."
 
 # Create a temporary file for cookies
+# Set environment variables
+export DISPLAY=:0  # Set the display number, if necessary
+export XAUTHORITY=/home/username/.Xauthority  # Path to the X authority file (if needed)
+
 COOKIES_TEMP=\"$(mktemp cookies_$(date +%s%N).txt)\"
 echo "Temporary file created at: $COOKIES_TEMP"
 
 # Extract cookies from Chrome 
-yt-dlp --cookies-from-browser chrome --cookies $COOKIES_TEMP --skip-download --quiet -i 
+$(pwd)/bin/yt-dlp --cookies-from-browser chrome --cookies $COOKIES_TEMP --skip-download --quiet -i 
 # # Check if yt-dlp was successful
 # if [ $? -ne 0 ]; then
 #   echo "Error: Failed to extract cookies from Chrome."

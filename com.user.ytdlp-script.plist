@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>com.user.ytdlp-script</string>
+    
+    <!-- Path to your script -->
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/yasaad/Projects/upper-room-media/process-audio-cloud-run/yt-dlp-cookies-script.sh</string>
+    </array>
+    
+    <!-- Specify the working directory -->
+    <key>WorkingDirectory</key>
+    <string>/Users/yasaad/Projects/upper-room-media/process-audio-cloud-run</string>
+
+    <!-- Run on login -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Schedule the job (run every day at 8am) -->
+    <key>StartInterval</key>
+    <integer>600</integer> <!-- 10 minutes in seconds -->
+
+    <!-- Keep environment variables for your script -->
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>DISPLAY</key>
+      <string>:0</string>
+      <key>DBUS_SESSION_BUS_ADDRESS</key>
+      <string>unix:path=/run/user/$(id -u)/bus</string>
+    </dict>
+  </dict>
+</plist>

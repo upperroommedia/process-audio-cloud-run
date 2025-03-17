@@ -19,7 +19,11 @@ FIREBASE_API_KEY=""
 FIREBASE_DB_URL="https://example.firebaseio.com/"
 ```
 
-2. Run the script in a cron job every 10 min
+2. To run this script on a schedule (mac) copy the `com.user.ytdlp-script.plist` to `~/Library/LaunchAgents/com.user.ytdlp-script.plist` and edit the `path-to-script` and `path-to-working-directory`
+
+- load the plist into launchctl using: `launchctl load ~/Library/LaunchAgents/com.user.ytdlp-script.plist`
+- if you make any edits make sure to `unload` then `load` again to update
+- you can verify that the script is running with `launchctl list | grep com.user.ytdlp-script`
 
 ## Local Development
 

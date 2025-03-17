@@ -1,5 +1,6 @@
 node_modules
 /dist
 .env
-cookies.txt
+cookies*.txt
 *.log
+
