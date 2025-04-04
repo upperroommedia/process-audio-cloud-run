@@ -75,7 +75,7 @@ const trimAndTranscode = async (
 
     proc
       .audioCodec('libmp3lame')
-      .audioFilters(['dynaudnorm=g=21:m=40:c=1:b=1', 'afftdn', 'pan=stereo|c0<c0+c1|c1<c0+c1']) // Dynamiaclly adjust volume and remove background noise and balance left right audio
+      .audioFilters(['dynaudnorm=g=21:m=40:c=1:b=0', 'afftdn', 'pan=stereo|c0<c0+c1|c1<c0+c1']) // Dynamiaclly adjust volume and remove background noise and balance left right audio
       .audioBitrate(128)
       .audioChannels(2)
       .audioFrequency(44100);
