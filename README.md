@@ -83,3 +83,21 @@ https://process-audio-yshbijirxq-uc.a.run.app/process-audio \
             }
 }'
 ```
+
+Local
+
+```
+curl \
+-X POST \
+-H 'Content-Type: application/json' \
+-H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+http://localhost:8080/process-audio \
+-d '{
+    "data":{
+                "id": "ID",
+                "youtubeUrl": "https://www.youtube.com/watch?v=MUIw7qrSW6k",
+                "startTime": 5155,
+                "duration": 1320
+            }
+}'
+```

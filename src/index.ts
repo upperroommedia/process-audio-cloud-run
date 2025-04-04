@@ -56,7 +56,7 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
   // data checks
   if (!data || !validateAddIntroOutroData(data)) {
     res.status(400).send(
-      `Invalid body: boyd must be an object with the following field: 
+      `Invalid body: body must be an object with the following field: 
          id (string),
          startTime (number),
          duration (number),
