@@ -46,7 +46,7 @@ export const processYouTubeUrl = async (
   }
 
   //pipes output to stdout
-  const args = ['--cookies', cookiesFilePath, '-f', 'bestaudio', '-N 4', '--no-playlist', '-o', '-'];
+  const args = ['-f', 'bestaudio/best', '-N 4', '--no-playlist', '-o', '-'];
   if (encodedCookies.exists()) {
     args.push('--cookies', cookiesFilePath);
   }
