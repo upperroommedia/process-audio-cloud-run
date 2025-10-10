@@ -101,3 +101,22 @@ http://localhost:8080/process-audio \
             }
 }'
 ```
+
+
+# INSTRUCTIONS FOR ROTATING YT-DLP COOKIES
+> Follow these instructions: https://github.com/yt-dlp/yt-dlp/wiki/Extractors
+
+1. Open a new private browsing/incognito window and log into YouTube (use the auth@upperroommedia.org google profile password Iam***)
+2. In same window and same tab from step 1, navigate to https://www.youtube.com/robots.txt (this should be the only private/incognito browsing tab open)
+3. Export youtube.com cookies from the browser, then close the private browsing/incognito window so that the session is never opened in the browser again. (use the get cookies extension and export all cookies)
+4. encode the `cookies.txt` by running the following command:
+```zh
+cat cookies.txt | base64 | pbcopy
+```
+5. Navigate (in a normal chrome window) to https://console.firebase.google.com/project/urm-app/database/urm-app-default-rtdb/data and paste the encoded value in the `yt-dlp-cookies` field
+
+
+
+
+## Download the latest yt-dlp binary
+https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
