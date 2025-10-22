@@ -22,12 +22,15 @@ jobs:
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # Step 3: Configure gcloud project
-      - name: Set GCP Project
-        run: gcloud config set project urm-app
-
-      # Step 4: Trigger Cloud Build
+      # Step 3: Trigger Cloud Build
       - name: Trigger Cloud Build
         run: |
           gcloud builds submit --config cloudbuild.yaml \
-            --substitutions=TRIGGER_NAME=github-actions,BRANCH_NAME=${{ github.ref_name }},COMMIT_SHA=${{ github.sha }}
+              --substitutions=\
+              TRIGGER_NAME="github-actions",\
+              BRANCH_NAME="${{ github.ref_name }}",\
+              COMMIT_SHA="${{ github.sha }}",\
+              REPO_NAME="${{ github.repository_owner }}",\
+              REPO_FULL_NAME="${{ github.repository }}",\
+              TAG_NAME="${{ github.ref_name }}",\
+              REF_NAME="${{ github.ref_name }}"
