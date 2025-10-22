@@ -3,6 +3,9 @@
 name: Daily yt-dlp rebuild
 
 on:
+  push:
+    branches:
+      - main
   schedule:
     - cron: '0 3 * * *'  # Daily at 03:00 UTC
   workflow_dispatch:
