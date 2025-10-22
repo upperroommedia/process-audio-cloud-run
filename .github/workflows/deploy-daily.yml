@@ -1,35 +1,33 @@
-# File: .github/workflows/yt-dlp-daily.yml
-
-name: Daily yt-dlp rebuild
+name: Build and Deploy Process Audio
 
 on:
   push:
     branches:
       - main
   schedule:
-    - cron: '0 3 * * *'  # Daily at 03:00 UTC
+    - cron: '0 3 * * *'  # daily at 03:00 UTC
   workflow_dispatch:
 
 jobs:
-  build-and-deploy:
+  build-deploy:
     runs-on: ubuntu-latest
 
     steps:
+      # Step 1: Checkout code
       - uses: actions/checkout@v4
 
-      # Authenticate to Google Cloud using the service account key JSON
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+      # Step 2: Authenticate to GCP
+      - name: Set up GCP credentials
+        uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
-      # Set up Google Cloud SDK
-      - name: Set up Cloud SDK
-        uses: google-github-actions/setup-gcloud@v3
-        with:
-          version: '>= 363.0.0'
+      # Step 3: Configure gcloud project
+      - name: Set GCP Project
+        run: gcloud config set project urm-app
 
-      # Trigger Cloud Build
+      # Step 4: Trigger Cloud Build
       - name: Trigger Cloud Build
         run: |
-          gcloud builds submit --config cloudbuild.yaml .
+          gcloud builds submit --config cloudbuild.yaml \
+            --substitutions=_TRIGGER_NAME=github-actions,_BRANCH_NAME=${{ github.ref_name }},_COMMIT_SHA=${{ github.sha }}
