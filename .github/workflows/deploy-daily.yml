@@ -26,4 +26,4 @@ jobs:
       - name: Trigger Cloud Build
         run: |
           gcloud builds submit --config cloudbuild.yaml \
-              --substitutions=TRIGGER_NAME="github-actions",BRANCH_NAME="${{ github.ref_name }}",COMMIT_SHA="${{ github.sha }}",REPO_NAME="${{ github.repository_owner }}",REPO_FULL_NAME="${{ github.repository }}",TAG_NAME="${{ github.ref_name }}",REF_NAME="${{ github.ref_name }}"
+              --substitutions=TRIGGER_NAME="github-actions",BRANCH_NAME="${{ github.ref_name }}",COMMIT_SHA="${{ github.sha }}",REPO_NAME="${{ github.repository }}",REPO_FULL_NAME="${{ github.repository }}",TAG_NAME="${{ github.ref_name }}",REF_NAME="${{ github.ref_name }}"
