@@ -9,6 +9,7 @@ import { path as ffprobeStatic } from 'ffprobe-static';
 import { ProcessAudioInputType, AudioSource, CustomMetadata, FilePaths } from './types';
 import { Bucket } from '@google-cloud/storage';
 import axios from 'axios';
+import { logger } from './index';
 
 export const throwErrorOnSpecificStderr = (stderrLine: string) => {
   const errorMessages = ['Output file is empty'];
@@ -38,7 +39,7 @@ export const logMemoryUsage = async (message: string) => {
     tempDir: (totalSize / (1024 * 1024)).toFixed(2), // Memory used by the tempDir in MB
   };
 
-  console.log(message, memoryUsageInMB);
+  logger.info(message, memoryUsageInMB);
 };
 
 export const createTempFile = (fileName: string, tempFiles: Set<string>) => {
@@ -80,21 +81,21 @@ export function secondsToTimeFormat(durationSeconds: number) {
 function logFFMPEGVersion(ffmpegStaticPath: string) {
   exec(`${ffmpegStaticPath} -version`, (err, stdout) => {
     if (err) {
-      console.error('FFMPEG not installed', err);
+      logger.error('FFMPEG not installed', err);
     } else {
-      console.log('FFMPEG version', stdout);
+      logger.info('FFMPEG version', stdout);
     }
   });
 }
 
 export function loadStaticFFMPEG(): typeof ffmpeg {
   if (!ffmpegStatic) {
-    console.error('ffmpeg-static not found');
+    logger.error('ffmpeg-static not found');
   } else {
     logFFMPEGVersion(ffmpegStatic);
-    console.log('ffmpeg-static found', ffmpegStatic);
+    logger.info('ffmpeg-static found', ffmpegStatic);
     ffmpeg.setFfmpegPath(ffmpegStatic);
-    console.log('ffprobe-static found', ffprobeStatic);
+    logger.info('ffprobe-static found', ffprobeStatic);
     ffmpeg.setFfprobePath(ffprobeStatic);
   }
   return ffmpeg;
@@ -106,7 +107,7 @@ export const uploadSermon = async (
   bucket: Bucket,
   customMetadata: CustomMetadata
 ) => {
-  console.log('custom metadata', customMetadata);
+  logger.info('custom metadata', customMetadata);
   const contentDisposition = customMetadata.title
     ? `inline; filename="${customMetadata.title}.mp3"`
     : 'inline; filename="untitled.mp3"';
@@ -171,7 +172,7 @@ export const downloadFiles = async (
     if (filePath) {
       tempFilePaths[key] = createTempFile(path.basename(filePath).split('?')[0], tempFiles);
       promises.push(downloadFile(filePath, tempFilePaths[key] as string));
-      console.log(`Downloading ${filePath} to ${tempFilePaths[key]}`);
+      logger.info(`Downloading ${filePath} to ${tempFilePaths[key]}`);
     }
   }
   await Promise.all(promises);
@@ -187,7 +188,7 @@ export async function executeWithTimout<T>(
     const id = setTimeout(() => {
       clearTimeout(id);
       cancelFunc();
-      console.error('Function timeout', `Timeout of ${delay / 1000} seconds exceeded`);
+      logger.error('Function timeout', `Timeout of ${delay / 1000} seconds exceeded`);
       reject(new Error(`Timeout of ${delay / 1000} seconds exceeded`));
     }, delay);
   });
@@ -202,19 +203,19 @@ export function validateAddIntroOutroData(data: unknown): data is ProcessAudioIn
   if ('youtubeUrl' in inputData) {
     if (!inputData.youtubeUrl) {
       const errorMessage = 'youtubeUrl cannot be empty if defined';
-      console.error('Invalid Argument', errorMessage);
+      logger.error('Invalid Argument', errorMessage);
       return false;
     }
   } else if ('storageFilePath' in inputData) {
     if (!inputData.storageFilePath) {
       const errorMessage = 'storageFilePath cannot me empty if defined';
-      console.error('Invalid Argument', errorMessage);
+      logger.error('Invalid Argument', errorMessage);
       return false;
     }
   } else {
     const errorMessage =
       'inputData must contain either a valid youtubeUrl (string) or storageFilePath (string) properties';
-    console.error('Invalid Argument', errorMessage);
+    logger.error('Invalid Argument', errorMessage);
     return false;
   }
 
@@ -227,7 +228,7 @@ export function validateAddIntroOutroData(data: unknown): data is ProcessAudioIn
   ) {
     const errorMessage =
       'Data must contain id (string), startTime (number), and endTime (number) properties || optionally introUrl (string) and outroUrl (string)';
-    console.error('Invalid Argument', errorMessage);
+    logger.error('Invalid Argument', errorMessage);
     return false;
   }
   return true;
@@ -239,7 +240,7 @@ function removeTimestampParam(urlString: string): string {
     url.searchParams.delete('t'); // Remove the 't' query parameter
     return url.toString();
   } catch (error) {
-    console.error('Invalid URL:', error);
+    logger.error('Invalid URL:', error);
     return urlString; // Return the original URL if parsing fails
   }
 }

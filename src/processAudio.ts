@@ -11,6 +11,7 @@ import trimAndTranscode from './trimAndTranscode';
 import mergeFiles from './mergeFiles';
 import { PROCESSED_SERMONS_BUCKET } from './consts';
 import trim from './trim';
+import { logger } from './index';
 
 export const processAudio = async (
   ffmpeg: typeof import('fluent-ffmpeg'),
@@ -38,7 +39,7 @@ export const processAudio = async (
   let docFound = false;
   let title = 'untitled';
   while (currentTry < maxTries) {
-    console.log(`Checking if document exists attempt: ${currentTry + 1}/${maxTries}`);
+    logger.info(`Checking if document exists attempt: ${currentTry + 1}/${maxTries}`);
     const doc = await docRef.get();
 
     if (doc.exists) {
@@ -46,13 +47,13 @@ export const processAudio = async (
       title = doc.data()?.title || 'No title found';
       break;
     }
-    console.log(`No document exists attempt: ${currentTry + 1}/${maxTries}`);
+    logger.info(`No document exists attempt: ${currentTry + 1}/${maxTries}`);
 
     currentTry++;
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
 
-  console.log('Out of while loop');
+  logger.info('Out of while loop');
   if (!docFound) {
     throw new Error(`Sermon Document ${fileName} Not Found`);
   }
@@ -77,7 +78,7 @@ export const processAudio = async (
       audioFilesToMerge.OUTRO = outroUrl;
       customMetadata.outroUrl = outroUrl;
     }
-    console.log('Audio File Download Paths', JSON.stringify(audioFilesToMerge));
+    logger.info('Audio File Download Paths', JSON.stringify(audioFilesToMerge));
     if (cancelToken.isCancellationRequested) return;
     const trimMessage = skipTranscode
       ? 'Trimming'
@@ -128,12 +129,12 @@ export const processAudio = async (
 
     // download processed audio for merging
     const processedFilePath = createTempFile(`processed-${fileName}`, tempFiles);
-    console.log('Downloading processed audio to', processedFilePath);
+    logger.info('Downloading processed audio to', processedFilePath);
     const [tempFilePaths] = await Promise.all([
       await downloadFiles(bucket, audioFilesToMerge, tempFiles),
       await bucket.file(processedStoragePath).download({ destination: processedFilePath }),
     ]);
-    console.log('Successfully downloaded processed audio');
+    logger.info('Successfully downloaded processed audio');
     //create merge array in order INTRO, CONTENT, OUTRO
     const filePathsArray: string[] = [];
     if (tempFilePaths.INTRO) filePathsArray.push(tempFilePaths.INTRO);
@@ -148,7 +149,7 @@ export const processAudio = async (
     ).reduce((accumulator, currentValue) => accumulator + currentValue, duration);
 
     customMetadata.duration = durationSeconds;
-    console.log('Total Duration', secondsToTimeFormat(durationSeconds));
+    logger.info('Total Duration', secondsToTimeFormat(durationSeconds));
 
     // if there is an intro or outro, merge the files
     if (filePathsArray.length > 1) {
@@ -162,7 +163,7 @@ export const processAudio = async (
       const outputFileName = `intro_outro-${fileName}`;
       const outputFilePath = `intro-outro-sermons/${path.basename(fileName)}`;
       //merge files
-      console.log('Merging files', filePathsArray, 'to', outputFileName, '...');
+      logger.info('Merging files', filePathsArray, 'to', outputFileName, '...');
       const mergedOutputFile = await mergeFiles(
         ffmpeg,
         cancelToken,
@@ -174,13 +175,13 @@ export const processAudio = async (
         realtimeDB.ref(`addIntroOutro/${fileName}`),
         customMetadata
       );
-      console.log('MergedFiles saved to', mergedOutputFile.name);
+      logger.info('MergedFiles saved to', mergedOutputFile.name);
       await logMemoryUsage('Memory Usage after merge:');
     } else {
-      console.log('No intro or outro, skipping merge');
+      logger.info('No intro or outro, skipping merge');
     }
     if (cancelToken.isCancellationRequested) return;
-    console.log('Updating status to PROCESSED');
+    logger.info('Updating status to PROCESSED');
     await docRef.update({
       status: {
         ...sermonStatus,
@@ -197,27 +198,27 @@ export const processAudio = async (
     if (audioSource.type === 'StorageFilePath') {
       const [originalFileExists] = await bucket.file(audioSource.source).exists();
       if (originalFileExists && deleteOriginal) {
-        console.log('Deleting original audio file', audioSource.source);
+        logger.info('Deleting original audio file', audioSource.source);
         await bucket.file(audioSource.source).delete();
-        console.log('Original audio file deleted');
+        logger.info('Original audio file deleted');
       }
     }
 
-    console.log('Files have been merged succesfully');
+    logger.info('Files have been merged succesfully');
   } catch (error) {
     throw error;
   } finally {
     await realtimeDB.ref(`addIntroOutro/${fileName}`).remove();
     const promises: Promise<void>[] = [];
     tempFiles.forEach((file) => {
-      console.log('Deleting temp file', file);
+      logger.info('Deleting temp file', file);
       promises.push(unlink(file));
     });
     try {
       await Promise.all(promises);
-      console.log('All temp files deleted');
+      logger.info('All temp files deleted');
     } catch (err) {
-      console.error('Error when deleting temporary files', err);
+      logger.error('Error when deleting temporary files', err);
     }
   }
 };

@@ -21,7 +21,7 @@ app.use(express.json());
 // get the path to the yt-dlp binary
 const ytdlpPath = 'yt-dlp';
 const loggingWinston = new LoggingWinston();
-const logger = winston.createLogger({
+export const logger = winston.createLogger({
   level: 'info',
   transports: [
     new winston.transports.Console(),

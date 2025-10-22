@@ -5,6 +5,7 @@ import { Writable } from 'stream';
 import fs from 'fs';
 import path from 'path';
 import { Database } from 'firebase-admin/database';
+import { logger } from './index';
 
 function extractPercent(line: string): number | null {
   const percentMatch = line.match(/(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)%/);
@@ -19,7 +20,7 @@ export const processYouTubeUrl = async (
   updateProgressCallback: (progress: number) => void,
   realtimeDB: Database
 ): Promise<ChildProcessWithoutNullStreams> => {
-  console.log('Streaming audio from youtube video:', url);
+  logger.info('Streaming audio from youtube video:', url);
   if (cancelToken.isCancellationRequested) {
     throw new Error('getYouTubeStream operation was cancelled');
   }
@@ -35,13 +36,13 @@ export const processYouTubeUrl = async (
 
       // Write the decoded contents to cookies.txt
       fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
-      console.log('cookies.txt file created from yt-dlp-cookies realtimeDB variable.');
+      logger.info('cookies.txt file created from yt-dlp-cookies realtimeDB variable.');
     } catch (err) {
-      console.error('Failed to decode and write cookies file:', err);
+      logger.error('Failed to decode and write cookies file:', err);
       process.exit(1);
     }
   } else {
-    console.error('Could not find yt-dlp-cookies in the realtimeDB');
+    logger.error('Could not find yt-dlp-cookies in the realtimeDB');
     process.exit(1);
   }
 
@@ -54,18 +55,18 @@ export const processYouTubeUrl = async (
 
   // Log the actual command
   const command = `${ytdlpPath} ${args.join(' ')}`;
-  console.log('Executing command:', JSON.stringify(command));
+  logger.info('Executing command:', JSON.stringify(command));
   const ytdlp = spawn(ytdlpPath, args);
 
   ytdlp.on('error', (err) => {
-    console.error('ytdlp Error:', err);
+    logger.error('ytdlp Error:', err);
     passThrough.emit('error', new Error(`getYoutubeStream error ${err}`));
   });
 
   ytdlp.on('close', (code) => {
-    console.log('ytdlp spawn closed with code', code);
+    logger.info('ytdlp spawn closed with code', code);
     if (code && code !== 0) {
-      console.error('Spawn closed with non-zero code of:', code);
+      logger.error('Spawn closed with non-zero code of:', code);
       passThrough.emit(
         'error',
         new Error('Spawn closed with non-zero error code. Please check logs for more information.')
@@ -74,16 +75,16 @@ export const processYouTubeUrl = async (
   });
 
   ytdlp.on('exit', () => {
-    console.log('ytdlp spawn exited');
+    logger.info('ytdlp spawn exited');
   });
 
   ytdlp.stdout.on('end', () => {
-    console.log('ytdlp stdout ended');
-    console.log('Number of MB streamed', totalBytes / (1024 * 1024));
+    logger.info('ytdlp stdout ended');
+    logger.info('Number of MB streamed', totalBytes / (1024 * 1024));
   });
 
   ytdlp.stderr?.on('error', (err) => {
-    console.error('ytdlp stderr Error:', err);
+    logger.error('ytdlp stderr Error:', err);
     passThrough.emit('error', new Error(`getYoutubeStream error: ${err}`));
   });
 
@@ -103,7 +104,7 @@ export const processYouTubeUrl = async (
       passThrough.emit('error', new Error(data.toString()));
       return;
     }
-    console.debug('ytdlp stderr:', data.toString());
+    logger.debug('ytdlp stderr:', data.toString());
   });
 
   ytdlp.stdout?.on('data', (data) => {

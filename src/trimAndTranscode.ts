@@ -8,6 +8,7 @@ import { unlink } from 'fs/promises';
 import { PassThrough, Readable } from 'stream';
 import { ChildProcessWithoutNullStreams } from 'child_process';
 import { sermonStatus, sermonStatusType } from './types';
+import { logger } from './index';
 
 const trimAndTranscode = async (
   ffmpeg: typeof import('fluent-ffmpeg'),
@@ -39,10 +40,10 @@ const trimAndTranscode = async (
   let transcodingStarted = false;
   const updateDownloadProgress = (progress: number) => {
     if (!transcodingStarted) {
-      console.log('Youtube Download progress (while transcoding has not yet started):', progress);
+      logger.info('Youtube Download progress (while transcoding has not yet started):', progress);
       realtimeDBRef.set(progress);
     } else {
-      console.log('Youtube Download progress:', progress);
+      logger.info('Youtube Download progress:', progress);
     }
   };
   try {
@@ -61,9 +62,9 @@ const trimAndTranscode = async (
     } else {
       // Process the audio source from storage
       const rawSourceFile = createTempFile(`raw-${audioSource.id}`, tempFiles);
-      console.log('Downloading raw audio source to', rawSourceFile);
+      logger.info('Downloading raw audio source to', rawSourceFile);
       await bucket.file(audioSource.source).download({ destination: rawSourceFile });
-      console.log('Successfully downloaded raw audio source');
+      logger.info('Successfully downloaded raw audio source');
       inputSource = rawSourceFile;
     }
 
@@ -90,27 +91,27 @@ const trimAndTranscode = async (
     const promiseResult = await new Promise<File>((resolve, reject) => {
       proc
         .on('start', async function (commandLine) {
-          console.log('Trim And Transcode Spawned Ffmpeg with command: ' + commandLine);
+          logger.info('Trim And Transcode Spawned Ffmpeg with command: ' + commandLine);
         })
         .on('end', async () => {
-          console.log('Finished Trim and Transcode');
+          logger.info('Finished Trim and Transcode');
           if (ytdlp) {
-            console.log('Killing ytdlp process');
+            logger.info('Killing ytdlp process');
             ytdlp.kill('SIGTERM'); // this sends a termination signal to the process
           }
           resolve(outputFile);
         })
         .on('error', (err) => {
-          console.error('Trim and Transcode Error:', err);
+          logger.error('Trim and Transcode Error:', err);
           reject(err);
         })
         .on('codecData', (data) => {
           // HERE YOU GET THE TOTAL TIME
-          console.log('Total duration: ' + data.duration);
+          logger.info('Total duration: ' + data.duration);
           totalTimeMillis = convertStringToMilliseconds(data.duration);
         })
         .on('stderr', (stderrLine) => {
-          console.debug('Ffmpeg stdout:', stderrLine);
+          logger.debug('Ffmpeg stdout:', stderrLine);
           try {
             throwErrorOnSpecificStderr(stderrLine);
           } catch (err) {
@@ -119,10 +120,10 @@ const trimAndTranscode = async (
         })
         .on('progress', async (progress) => {
           if (cancelToken.isCancellationRequested) {
-            console.log('Cancellation requested, killing ffmpeg process');
+            logger.info('Cancellation requested, killing ffmpeg process');
             proc.kill('SIGTERM'); // this sends a termination signal to the process
             if (ytdlp) {
-              console.log('Killing ytdlp process');
+              logger.info('Killing ytdlp process');
               ytdlp.kill('SIGTERM'); // this sends a termination signal to the process
             }
             reject(new Error('Trim and Transcode operation was cancelled'));
@@ -146,7 +147,7 @@ const trimAndTranscode = async (
           const percent = Math.round(Math.max(0, ((timeMillis * 0.95) / calculatedDuration) * 100)); // go to 95% to leave room for the time it takes to Merge the files
           if (percent !== previousPercent) {
             previousPercent = percent;
-            console.log('Trim and Transcode Progress:', percent);
+            logger.info('Trim and Transcode Progress:', percent);
             realtimeDBRef.set(percent);
           }
         })
@@ -155,36 +156,36 @@ const trimAndTranscode = async (
     if (typeof inputSource === 'string') {
       // Delete raw audio from temp memory
       await logMemoryUsage('Before raw audio delete memory:');
-      console.log('Deleting raw audio temp file:', inputSource);
+      logger.info('Deleting raw audio temp file:', inputSource);
       await unlink(inputSource);
       tempFiles.delete(inputSource);
-      console.log('Successfully deleted raw audio temp file:', inputSource);
+      logger.info('Successfully deleted raw audio temp file:', inputSource);
       await logMemoryUsage('After raw audio delete memory:');
     }
 
     return promiseResult;
   } catch (error) {
-    console.error('Error in trimAndTranscode:', error);
+    logger.error('Error in trimAndTranscode:', error);
 
     // Add additional cleanup logic if needed
     if (inputSource && typeof inputSource === 'string') {
-      console.log('Attempting to delete temporary file:', inputSource);
+      logger.info('Attempting to delete temporary file:', inputSource);
       try {
         await unlink(inputSource);
         tempFiles.delete(inputSource);
       } catch (unlinkError) {
-        console.error('Failed to delete temporary file:', unlinkError);
+        logger.error('Failed to delete temporary file:', unlinkError);
       }
     }
 
     if (ytdlp) {
-      console.log('Attempting to terminate YouTube download process');
+      logger.info('Attempting to terminate YouTube download process');
       ytdlp.kill('SIGTERM');
     }
 
     throw error; // Bubble up the error
   } finally {
-    console.log('Cleaning up resources after trimAndTranscode');
+    logger.info('Cleaning up resources after trimAndTranscode');
     await logMemoryUsage('After processing');
   }
 };
