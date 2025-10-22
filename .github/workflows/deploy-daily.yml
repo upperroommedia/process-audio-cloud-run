@@ -1,5 +1,6 @@
-name: Build and Deploy Process Audio
-
+name: Build and Deploy Process Audio 
+env:
+  PYTHONWARNINGS: "ignore" # suppress warnings from app engine libraries
 on:
   push:
     branches:
