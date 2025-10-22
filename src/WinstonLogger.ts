@@ -14,9 +14,9 @@ const baseLogger = winston.createLogger({
 function logWithMeta(level: string, message: string, meta: string | number | boolean | object | undefined | null) {
   if (typeof meta === 'string' || typeof meta === 'number' || typeof meta === 'boolean') {
     // Wrap string metadata into an object
-    baseLogger.log(level, message, { extra: meta });
+    baseLogger.log(level, { message, object: meta });
   } else if (meta && typeof meta === 'object') {
-    baseLogger.log(level, message, meta);
+    baseLogger.log(level, { message, object: meta });
   } else {
     baseLogger.log(level, message);
   }
