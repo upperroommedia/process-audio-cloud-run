@@ -5,7 +5,7 @@ import { Writable } from 'stream';
 import fs from 'fs';
 import path from 'path';
 import { Database } from 'firebase-admin/database';
-import { logger } from './index';
+import logger from './WinstonLogger';
 
 function extractPercent(line: string): number | null {
   const percentMatch = line.match(/(100(\.0{1,2})?|\d{1,2}(\.\d{1,2})?)%/);

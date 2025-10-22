@@ -11,7 +11,7 @@ import trimAndTranscode from './trimAndTranscode';
 import mergeFiles from './mergeFiles';
 import { PROCESSED_SERMONS_BUCKET } from './consts';
 import trim from './trim';
-import { logger } from './index';
+import logger from './WinstonLogger';
 
 export const processAudio = async (
   ffmpeg: typeof import('fluent-ffmpeg'),
@@ -31,7 +31,7 @@ export const processAudio = async (
   outroUrl?: string
 ): Promise<void> => {
   const fileName = audioSource.id;
-  await logMemoryUsage('Initial Memory Usage:');
+  await logMemoryUsage('Initial Memory Usage');
   const tempFiles = new Set<string>();
   // the document may not exist yet, if it deosnt wait 5 seconds and try again do this for a max of 3 times before throwing an error
   const maxTries = 3;
@@ -163,7 +163,7 @@ export const processAudio = async (
       const outputFileName = `intro_outro-${fileName}`;
       const outputFilePath = `intro-outro-sermons/${path.basename(fileName)}`;
       //merge files
-      logger.info('Merging files', filePathsArray, 'to', outputFileName, '...');
+      logger.info('Merging files', { filePathsArray: filePathsArray, destination: outputFileName });
       const mergedOutputFile = await mergeFiles(
         ffmpeg,
         cancelToken,
@@ -176,7 +176,7 @@ export const processAudio = async (
         customMetadata
       );
       logger.info('MergedFiles saved to', mergedOutputFile.name);
-      await logMemoryUsage('Memory Usage after merge:');
+      await logMemoryUsage('Memory Usage after merge');
     } else {
       logger.info('No intro or outro, skipping merge');
     }

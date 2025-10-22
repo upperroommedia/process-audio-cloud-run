@@ -1,6 +1,6 @@
 import firebaseAdmin from 'firebase-admin';
 import { applicationDefault } from 'firebase-admin/app';
-import { logger } from './index';
+import logger from './WinstonLogger';
 const isDevelopment = process.env.NODE_ENV === 'development';
 
 if (!firebaseAdmin.apps.length) {

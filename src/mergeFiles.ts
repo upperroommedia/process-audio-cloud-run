@@ -4,7 +4,7 @@ import { Bucket, File } from '@google-cloud/storage';
 import { CustomMetadata } from './types';
 import { convertStringToMilliseconds, createTempFile } from './utils';
 import { writeFileSync } from 'fs';
-import { logger } from './index';
+import logger from './WinstonLogger';
 
 const mergeFiles = async (
   ffmpeg: typeof import('fluent-ffmpeg'),

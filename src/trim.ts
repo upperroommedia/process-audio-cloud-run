@@ -5,7 +5,7 @@ import { Reference } from 'firebase-admin/database';
 import { convertStringToMilliseconds, createTempFile, logMemoryUsage } from './utils';
 import { CustomMetadata } from './types';
 import { unlink } from 'fs/promises';
-import { logger } from './index';
+import logger from './WinstonLogger';
 
 const trimAndTranscode = async (
   ffmpeg: typeof import('fluent-ffmpeg'),
@@ -83,12 +83,12 @@ const trimAndTranscode = async (
   });
 
   // Delete raw audio from temp memory
-  await logMemoryUsage('Before raw audio delete memory:');
+  await logMemoryUsage('Before raw audio delete memory');
   logger.info('Deleting raw audio temp file:', rawSourceFile);
   await unlink(rawSourceFile);
   tempFiles.delete(rawSourceFile);
   logger.info('Successfully deleted raw audio temp file:', rawSourceFile);
-  await logMemoryUsage('After raw audio delete memory:');
+  await logMemoryUsage('After raw audio delete memory');
 
   return promiseResult;
 };

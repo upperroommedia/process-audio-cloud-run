@@ -8,7 +8,7 @@ import { unlink } from 'fs/promises';
 import { PassThrough, Readable } from 'stream';
 import { ChildProcessWithoutNullStreams } from 'child_process';
 import { sermonStatus, sermonStatusType } from './types';
-import { logger } from './index';
+import logger from './WinstonLogger';
 
 const trimAndTranscode = async (
   ffmpeg: typeof import('fluent-ffmpeg'),
@@ -155,12 +155,12 @@ const trimAndTranscode = async (
     });
     if (typeof inputSource === 'string') {
       // Delete raw audio from temp memory
-      await logMemoryUsage('Before raw audio delete memory:');
+      await logMemoryUsage('Before raw audio delete memory');
       logger.info('Deleting raw audio temp file:', inputSource);
       await unlink(inputSource);
       tempFiles.delete(inputSource);
       logger.info('Successfully deleted raw audio temp file:', inputSource);
-      await logMemoryUsage('After raw audio delete memory:');
+      await logMemoryUsage('After raw audio delete memory');
     }
 
     return promiseResult;

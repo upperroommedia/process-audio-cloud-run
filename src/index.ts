@@ -13,22 +13,12 @@ import { CancelToken } from './CancelToken';
 import { firestoreAdminSermonConverter } from './firestoreAdminDataConverter';
 import { TIMEOUT_SECONDS } from './consts';
 import firebaseAdmin from './firebaseAdmin';
-import { LoggingWinston } from '@google-cloud/logging-winston';
-import winston from 'winston';
-
+import logger from './WinstonLogger';
 const app = express();
 app.use(express.json());
 // get the path to the yt-dlp binary
 const ytdlpPath = 'yt-dlp';
-const loggingWinston = new LoggingWinston();
-export const logger = winston.createLogger({
-  level: 'info',
-  transports: [
-    new winston.transports.Console(),
-    // Add Cloud Logging
-    loggingWinston,
-  ],
-});
+
 logger.info('ytdlpPath', ytdlpPath);
 
 logger.info('Loading storage, realtimeDB and firestore');
@@ -135,7 +125,7 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
     logger.error('Error', e);
     res.status(500).send(message);
   } finally {
-    await logMemoryUsage('Final Memory Usage:');
+    await logMemoryUsage('Final Memory Usage');
   }
 });
 

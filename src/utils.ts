@@ -9,7 +9,7 @@ import { path as ffprobeStatic } from 'ffprobe-static';
 import { ProcessAudioInputType, AudioSource, CustomMetadata, FilePaths } from './types';
 import { Bucket } from '@google-cloud/storage';
 import axios from 'axios';
-import { logger } from './index';
+import logger from './WinstonLogger';
 
 export const throwErrorOnSpecificStderr = (stderrLine: string) => {
   const errorMessages = ['Output file is empty'];
@@ -39,7 +39,7 @@ export const logMemoryUsage = async (message: string) => {
     tempDir: (totalSize / (1024 * 1024)).toFixed(2), // Memory used by the tempDir in MB
   };
 
-  logger.info(message, memoryUsageInMB);
+  logger.debug(message, memoryUsageInMB);
 };
 
 export const createTempFile = (fileName: string, tempFiles: Set<string>) => {
