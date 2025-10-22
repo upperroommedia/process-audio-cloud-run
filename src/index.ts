@@ -1,5 +1,4 @@
 import express, { Request } from 'express';
-import path from 'path';
 import {
   executeWithTimout,
   getAudioSource,
