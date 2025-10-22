@@ -1,18 +1,17 @@
-# If you need more help, visit the Dockerfile reference guide at
-# https://docs.docker.com/go/dockerfile-reference/
-
 # Use an argument to specify the Node.js version
 ARG NODE_VERSION=18.12.0
 ARG PNPM_VERSION=6.32.3
 
-# Build stage
+# ---------- Build stage ----------
 FROM node:${NODE_VERSION}-alpine AS build
-
-# Set the working directory in the container
 WORKDIR /usr/src/app
 
 # Install Python3 and other build dependencies
 RUN apk add --no-cache python3 make g++
+# ✅ Add the latest yt-dlp binary (always fetched fresh on each build)
+RUN wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp \
+    && yt-dlp --version
 
 # Install pnpm
 RUN npm install -g pnpm@${PNPM_VERSION}
@@ -29,37 +28,29 @@ COPY . .
 # Build the application
 RUN pnpm build
 
-# Production stage
+# ---------- Production stage ----------
 FROM node:${NODE_VERSION}-alpine AS production
-
-# Set NODE_ENV to production to exclude development dependencies
-ENV NODE_ENV production
-
-# Use production node environment by default.
+ENV NODE_ENV=production
 WORKDIR /usr/src/app
 
 # Install Python3 and other build dependencies
 RUN apk add --no-cache python3 make g++
 
-# Copy package.json and pnpm-lock.yaml
-COPY package.json pnpm-lock.yaml ./
+# ✅ Add yt-dlp (latest release)
+RUN wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp?$(date +%s) \
+    && chmod a+rx /usr/local/bin/yt-dlp \
+    && yt-dlp --version
 
-# Install production dependencies only
+# Copy package files and install production dependencies
+COPY package.json pnpm-lock.yaml ./
 RUN npm install -g pnpm@${PNPM_VERSION} && pnpm install --frozen-lockfile --prod
 
-# Copy the built application from the build stage
+# Copy built app from build stage
 COPY --from=build /usr/src/app/dist ./dist
-COPY ./bin ./bin
-# Set the executable permission on the binaries
-RUN chmod +x ./bin/*
 
-# Change ownership of the entire working directory so the node user can write to it
+# Change ownership to node user
 RUN chown -R node:node /usr/src/app
-
-# Run the application as a non-root user for security
 USER node
 
-# Set the command to start the application
-CMD pnpm start
-
-
+# Start the app
+CMD ["pnpm", "start"]

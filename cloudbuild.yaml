@@ -1,0 +1,27 @@
+steps:
+  # Step 1: Build Docker image (force latest yt-dlp)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '--no-cache', 
+      '-t', 'gcr.io/$PROJECT_ID/process-audio:latest',
+      '.'
+    ]
+
+  # Step 2: Push image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/process-audio:latest']
+
+  # Step 3: Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args: [
+      'run', 'deploy', 'process-audio',
+      '--image', 'gcr.io/$PROJECT_ID/process-audio:latest',
+      '--region', 'us-central1',
+      '--platform', 'managed',
+      '--allow-unauthenticated'
+    ]
+
+images:
+  - 'gcr.io/$PROJECT_ID/process-audio:latest'
