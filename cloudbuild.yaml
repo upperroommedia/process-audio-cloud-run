@@ -16,12 +16,10 @@ steps:
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args: [
-      'run', 'deploy', 'process-audio',
+      'run', 'deploy', 'process-audio-yshbijirxq-uc',
       '--image', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:latest',
       '--region', 'us-central1',
       '--platform', 'managed',
-      '--service', 'process-audio-yshbijirxq-uc'
-
     ]
 images:
   - 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:latest'
