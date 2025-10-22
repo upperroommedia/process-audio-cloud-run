@@ -30,4 +30,4 @@ jobs:
       - name: Trigger Cloud Build
         run: |
           gcloud builds submit --config cloudbuild.yaml \
-            --substitutions=_TRIGGER_NAME=github-actions,_BRANCH_NAME=${{ github.ref_name }},_COMMIT_SHA=${{ github.sha }}
+            --substitutions=TRIGGER_NAME=github-actions,BRANCH_NAME=${{ github.ref_name }},COMMIT_SHA=${{ github.sha }}
