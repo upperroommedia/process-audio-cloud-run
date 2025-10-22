@@ -2,19 +2,14 @@
 options:
   substitutionOption: ALLOW_LOOSE
 
-substitutions:
-  _TRIGGER_NAME: "github-workflow"
-  _BRANCH_NAME: "main"
-  _COMMIT_SHA: "dev"
-
 steps:
   # Step 1: Build Docker image
   - name: 'gcr.io/cloud-builders/docker'
     args:
       [
         'build',
-        '--build-arg', 'CACHEBUST=${_COMMIT_SHA}',  # force latest yt-dlp layer
-        '-t', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${_COMMIT_SHA}',
+        '--build-arg', 'CACHEBUST=${COMMIT_SHA}',  # force latest yt-dlp layer
+        '-t', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
         '.'
       ]
 
@@ -23,7 +18,7 @@ steps:
     args:
       [
         'push',
-        'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${_COMMIT_SHA}'
+        'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}'
       ]
 
   # Step 3: Deploy to Cloud Run (private service)
@@ -32,11 +27,11 @@ steps:
     args:
       [
         'run', 'deploy', 'process-audio',
-        '--image', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${_COMMIT_SHA}',
+        '--image', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
         '--region', 'us-central1',
         '--platform', 'managed'
       ]
 
 images:
-  - 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${_COMMIT_SHA}'
+  - 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}'
 
