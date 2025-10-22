@@ -13,24 +13,35 @@ import { CancelToken } from './CancelToken';
 import { firestoreAdminSermonConverter } from './firestoreAdminDataConverter';
 import { TIMEOUT_SECONDS } from './consts';
 import firebaseAdmin from './firebaseAdmin';
+import { LoggingWinston } from '@google-cloud/logging-winston';
+import winston from 'winston';
 
 const app = express();
 app.use(express.json());
 // get the path to the yt-dlp binary
 const ytdlpPath = 'yt-dlp';
-console.log('ytdlpPath', ytdlpPath);
+const loggingWinston = new LoggingWinston();
+const logger = winston.createLogger({
+  level: 'info',
+  transports: [
+    new winston.transports.Console(),
+    // Add Cloud Logging
+    loggingWinston,
+  ],
+});
+logger.info('ytdlpPath', ytdlpPath);
 
-console.log('Loading storage, realtimeDB and firestore');
+logger.info('Loading storage, realtimeDB and firestore');
 const bucket = firebaseAdmin.storage().bucket();
 const realtimeDB = firebaseAdmin.database();
 const db = firebaseAdmin.firestore();
 
-console.log('Loading ffmpeg');
+logger.info('Loading ffmpeg');
 const ffmpeg = loadStaticFFMPEG();
 
 app.get('/', (req, res) => {
   const VERSION = '1.1.0';
-  console.log('GET /', `Process Audio Running version ${VERSION}`);
+  logger.info('GET /', `Process Audio Running version ${VERSION}`);
   res.send(`
   Process Audio Running version ${VERSION}
   Post to /process-audio with data in the format of
@@ -48,7 +59,7 @@ app.get('/', (req, res) => {
 app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioInputType }>, res) => {
   const timeoutMillis = (TIMEOUT_SECONDS - 30) * 1000; // 30s less than timeoutSeconds
   // set timeout to 30 seconds less than timeoutSeconds then throw error if it takes longer than that
-  console.log('POST /process-audio', request.body);
+  logger.info('POST /process-audio', request.body);
 
   const data = request.body?.data;
 
@@ -110,7 +121,7 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
       message = e.message;
     }
     try {
-      console.log('Updating audioStatus to ERROR');
+      logger.info('Updating audioStatus to ERROR');
       await docRef.update({
         status: {
           ...sermonStatus,
@@ -119,9 +130,9 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
         },
       });
     } catch (_e) {
-      console.error('Error Updating Document with docRef', docRef.path);
+      logger.error('Error Updating Document with docRef', docRef.path);
     }
-    console.error('Error', e);
+    logger.error('Error', e);
     res.status(500).send(message);
   } finally {
     await logMemoryUsage('Final Memory Usage:');
@@ -130,5 +141,5 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
 
 const port = parseInt(process.env.PORT ?? '') || 8080;
 app.listen(port, () => {
-  console.log(`Process Audio Service running on port: ${port}`);
+  logger.info(`Process Audio Service running on port: ${port}`);
 });
