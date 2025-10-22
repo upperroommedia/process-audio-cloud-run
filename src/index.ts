@@ -18,7 +18,7 @@ import firebaseAdmin from './firebaseAdmin';
 const app = express();
 app.use(express.json());
 // get the path to the yt-dlp binary
-const ytdlpPath = path.join(__dirname, '../bin', 'yt-dlp');
+const ytdlpPath = 'yt-dlp';
 console.log('ytdlpPath', ytdlpPath);
 
 console.log('Loading storage, realtimeDB and firestore');
