@@ -78,7 +78,7 @@ export const processAudio = async (
       audioFilesToMerge.OUTRO = outroUrl;
       customMetadata.outroUrl = outroUrl;
     }
-    logger.info('Audio File Download Paths', JSON.stringify(audioFilesToMerge));
+    logger.info('Audio File Download Paths', audioFilesToMerge);
     if (cancelToken.isCancellationRequested) return;
     const trimMessage = skipTranscode
       ? 'Trimming'

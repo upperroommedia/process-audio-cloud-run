@@ -55,7 +55,7 @@ export const processYouTubeUrl = async (
 
   // Log the actual command
   const command = `${ytdlpPath} ${args.join(' ')}`;
-  logger.info('Executing command:', JSON.stringify(command));
+  logger.info('Executing command', command);
   const ytdlp = spawn(ytdlpPath, args);
 
   ytdlp.on('error', (err) => {
