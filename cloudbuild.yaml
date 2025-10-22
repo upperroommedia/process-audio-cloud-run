@@ -1,6 +1,7 @@
 # cloudbuild.yaml
 options:
   substitutionOption: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY
 
 steps:
   # Step 1: Build Docker image
