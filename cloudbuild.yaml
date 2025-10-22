@@ -20,7 +20,8 @@ steps:
       '--image', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:latest',
       '--region', 'us-central1',
       '--platform', 'managed',
-      '--allow-unauthenticated'
+      '--service', 'process-audio-yshbijirxq-uc'
+
     ]
 images:
   - 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:latest'
