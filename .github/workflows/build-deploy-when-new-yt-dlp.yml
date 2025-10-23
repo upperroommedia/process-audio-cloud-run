@@ -12,43 +12,43 @@ jobs:
     outputs:
       should_deploy: ${{ steps.diff.outputs.updated }}
     steps:
-      - name: Get latest yt-dlp commit
+      - name: Get latest yt-dlp tag
         id: check
         run: |
-          LATEST=$(curl -s https://api.github.com/repos/yt-dlp/yt-dlp/commits/master | jq -r .sha)
+          LATEST=$(curl -s https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest | jq -r .tag_name)
           echo "latest=$LATEST" >> $GITHUB_OUTPUT
 
-      - name: Restore cached commit
+      - name: Restore cached tag
         uses: actions/cache@v4
         with:
           path: .cache
-          key: yt-dlp-commit-cache
+          key: yt-dlp-tag-cache
           restore-keys: |
-            yt-dlp-commit-
+            yt-dlp-tag-
 
-      - name: Load cached commit
+      - name: Load cached tag
         id: cache
         run: |
           mkdir -p .cache
-          test -f .cache/yt_dlp_commit || echo "" > .cache/yt_dlp_commit
-          echo "cached=$(cat .cache/yt_dlp_commit)" >> $GITHUB_OUTPUT
+          test -f .cache/yt_dlp_tag || echo "" > .cache/yt_dlp_tag
+          echo "cached=$(cat .cache/yt_dlp_tag)" >> $GITHUB_OUTPUT
 
-      - name: Compare commits
+      - name: Compare tags
         id: diff
         run: |
           if [ "${{ steps.check.outputs.latest }}" != "${{ steps.cache.outputs.cached }}" ]; then
             echo "updated=true" >> $GITHUB_OUTPUT
-            echo "${{ steps.check.outputs.latest }}" > .cache/yt_dlp_commit
+            echo "${{ steps.check.outputs.latest }}" > .cache/yt_dlp_tag
           else
             echo "updated=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Save cached commit
+      - name: Save cached tag
         if: steps.diff.outputs.updated == 'true'
         uses: actions/cache/save@v4
         with:
           path: .cache
-          key: yt-dlp-commit-cache-${{ steps.check.outputs.latest }}
+          key: yt-dlp-tag-cache-${{ steps.check.outputs.latest }}
 
   build-deploy:
     needs: check-yt-dlp
