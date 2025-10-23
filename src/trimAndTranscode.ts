@@ -40,10 +40,10 @@ const trimAndTranscode = async (
   let transcodingStarted = false;
   const updateDownloadProgress = (progress: number) => {
     if (!transcodingStarted) {
-      logger.info('Youtube Download progress (while transcoding has not yet started):', progress);
+      logger.info(`Youtube Download progress (while transcoding has not yet started): ${progress}`);
       realtimeDBRef.set(progress);
     } else {
-      logger.info('Youtube Download progress:', progress);
+      logger.info(`Youtube Download progress: ${progress}`);
     }
   };
   try {
@@ -147,7 +147,7 @@ const trimAndTranscode = async (
           const percent = Math.round(Math.max(0, ((timeMillis * 0.95) / calculatedDuration) * 100)); // go to 95% to leave room for the time it takes to Merge the files
           if (percent !== previousPercent) {
             previousPercent = percent;
-            logger.info('Trim and Transcode Progress:', percent);
+            logger.info(`Trim and Transcode Progress: ${percent}`);
             realtimeDBRef.set(percent);
           }
         })
@@ -156,10 +156,10 @@ const trimAndTranscode = async (
     if (typeof inputSource === 'string') {
       // Delete raw audio from temp memory
       await logMemoryUsage('Before raw audio delete memory');
-      logger.info('Deleting raw audio temp file:', inputSource);
+      logger.info(`Deleting raw audio temp file: ${inputSource}`);
       await unlink(inputSource);
       tempFiles.delete(inputSource);
-      logger.info('Successfully deleted raw audio temp file:', inputSource);
+      logger.info(`Successfully deleted raw audio temp file: ${inputSource}`);
       await logMemoryUsage('After raw audio delete memory');
     }
 
@@ -169,7 +169,7 @@ const trimAndTranscode = async (
 
     // Add additional cleanup logic if needed
     if (inputSource && typeof inputSource === 'string') {
-      logger.info('Attempting to delete temporary file:', inputSource);
+      logger.info(`Attempting to delete temporary file: ${inputSource}`);
       try {
         await unlink(inputSource);
         tempFiles.delete(inputSource);
