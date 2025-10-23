@@ -1,20 +1,13 @@
 # Use an argument to specify the Node.js version
-ARG NODE_VERSION=18.12.0
-ARG PNPM_VERSION=6.32.3
+ARG NODE_VERSION=18.20.4
+ARG PNPM_VERSION=9.12.3
 
 # ---------- Build stage ----------
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /usr/src/app
 
-# Install Python3 and other build dependencies
+# Install build dependencies (needed for native modules during npm install)
 RUN apk add --no-cache python3 make g++
-
-# Add the latest yt-dlp binary (always fetched fresh on each build)
-RUN apk add --no-cache curl \
-    && curl -L -o /usr/local/bin/yt-dlp \
-       "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp?$(date +%s)" \
-    && chmod a+rx /usr/local/bin/yt-dlp \
-    && echo "yt-dlp version: $(yt-dlp --version)"
 
 # Install pnpm
 RUN npm install -g pnpm@${PNPM_VERSION}
@@ -22,7 +15,7 @@ RUN npm install -g pnpm@${PNPM_VERSION}
 # Copy package.json and pnpm-lock.yaml
 COPY package.json pnpm-lock.yaml ./
 
-# Install dependencies
+# Install dependencies (includes devDependencies for TypeScript compilation)
 RUN pnpm install --frozen-lockfile
 
 # Copy the rest of the source files into the image
@@ -36,19 +29,21 @@ FROM node:${NODE_VERSION}-alpine AS production
 ENV NODE_ENV=production
 WORKDIR /usr/src/app
 
-# Install Python3 and other build dependencies
+# Install build dependencies needed for native Node modules (ffmpeg-static, protobufjs, etc.)
 RUN apk add --no-cache python3 make g++
 
 # Add yt-dlp (latest release)
-RUN apk add --no-cache curl \
-    && curl -L -o /usr/local/bin/yt-dlp \
+RUN wget -O /usr/local/bin/yt-dlp \
        "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp?$(date +%s)" \
     && chmod a+rx /usr/local/bin/yt-dlp \
     && echo "yt-dlp version: $(yt-dlp --version)"
 
-# Copy package files and install production dependencies
+# Install pnpm and copy package files
+RUN npm install -g pnpm@${PNPM_VERSION}
 COPY package.json pnpm-lock.yaml ./
-RUN npm install -g pnpm@${PNPM_VERSION} && pnpm install --frozen-lockfile --prod
+
+# Install production dependencies only
+RUN pnpm install --frozen-lockfile --prod
 
 # Copy built app from build stage
 COPY --from=build /usr/src/app/dist ./dist
