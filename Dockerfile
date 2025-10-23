@@ -2,21 +2,19 @@
 ARG NODE_VERSION=18.12.0
 ARG PNPM_VERSION=6.32.3
 
-# Use an argument to force Docker to rebuild the layer
-ARG CACHEBUST=1
-
 # ---------- Build stage ----------
 FROM node:${NODE_VERSION}-alpine AS build
 WORKDIR /usr/src/app
 
 # Install Python3 and other build dependencies
 RUN apk add --no-cache python3 make g++
-# ✅ Add the latest yt-dlp binary (always fetched fresh on each build)
+
+# Add the latest yt-dlp binary (always fetched fresh on each build)
 RUN apk add --no-cache curl \
     && curl -L -o /usr/local/bin/yt-dlp \
-       "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp?cachebust=${CACHEBUST}" \
+       "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp?$(date +%s)" \
     && chmod a+rx /usr/local/bin/yt-dlp \
-    && yt-dlp --version
+    && echo "yt-dlp version: $(yt-dlp --version)"
 
 # Install pnpm
 RUN npm install -g pnpm@${PNPM_VERSION}
@@ -41,10 +39,12 @@ WORKDIR /usr/src/app
 # Install Python3 and other build dependencies
 RUN apk add --no-cache python3 make g++
 
-# ✅ Add yt-dlp (latest release)
-RUN wget -qO /usr/local/bin/yt-dlp https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp?$(date +%s) \
+# Add yt-dlp (latest release)
+RUN apk add --no-cache curl \
+    && curl -L -o /usr/local/bin/yt-dlp \
+       "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp?$(date +%s)" \
     && chmod a+rx /usr/local/bin/yt-dlp \
-    && yt-dlp --version
+    && echo "yt-dlp version: $(yt-dlp --version)"
 
 # Copy package files and install production dependencies
 COPY package.json pnpm-lock.yaml ./

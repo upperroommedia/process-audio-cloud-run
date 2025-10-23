@@ -1,13 +1,10 @@
-name: Build and Deploy Process Audio 
+name: Build and Deploy Process Audio
 env:
-  PYTHONWARNINGS: "ignore" # suppress warnings from app engine libraries
+  PYTHONWARNINGS: 'ignore' # suppress warnings from app engine libraries
 on:
   push:
     branches:
       - main
-  schedule:
-    - cron: '0 3 * * *'  # daily at 03:00 UTC
-  workflow_dispatch:
 
 jobs:
   build-deploy:
