@@ -1,57 +1,87 @@
 name: Redeploy when yt-dlp updates
+
 env:
   PYTHONWARNINGS: 'ignore' # suppress warnings from app engine libraries
+
 on:
   schedule:
     - cron: '0 0 * * *' # Check daily at 12:00 AM UTC
   workflow_dispatch:
 
+concurrency:
+  group: yt-dlp-update
+  cancel-in-progress: false
+
 jobs:
   check-yt-dlp:
     runs-on: ubuntu-latest
-    concurrency:
-      group: yt-dlp-update
-      cancel-in-progress: false
     outputs:
       should_deploy: ${{ steps.diff.outputs.updated }}
+      latest_tag: ${{ steps.check.outputs.latest }}
+
     steps:
+      - name: Checkout repository (needed to read/write tag file)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: true # allow pushing with GITHUB_TOKEN
+          fetch-depth: 0 # get full history so commits/pushes are safe
+
       - name: Get latest yt-dlp tag
         id: check
         run: |
           LATEST=$(curl -s https://api.github.com/repos/yt-dlp/yt-dlp/releases/latest | jq -r .tag_name)
+          if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+            echo "Could not get latest tag from API" >&2
+            echo "latest=" >> $GITHUB_OUTPUT
+            exit 1
+          fi
           echo "latest=$LATEST" >> $GITHUB_OUTPUT
 
-      - name: Restore cached tag
-        uses: actions/cache@v4
-        with:
-          path: .cache
-          key: yt-dlp-tag-cache-
-          restore-keys: |
-            yt-dlp-tag-cache-
-
-      - name: Load cached tag
-        id: cache
+      - name: Ensure tag file exists
         run: |
-          mkdir -p .cache
-          test -f .cache/yt_dlp_tag || echo "" > .cache/yt_dlp_tag
-          echo "cached=$(cat .cache/yt_dlp_tag)" >> $GITHUB_OUTPUT
+          mkdir -p .github
+          test -f .github/yt_dlp_tag || echo "" > .github/yt_dlp_tag
 
-      - name: Compare tags
+      - name: Load cached tag from repo file
+        id: load
+        run: |
+          TAG_FILE=".github/yt_dlp_tag"
+          CACHED=$(cat "$TAG_FILE" | tr -d '\r\n' || true)
+          # ensure not null
+          if [ -z "$CACHED" ]; then
+            echo "cached=" >> $GITHUB_OUTPUT
+          else
+            echo "cached=$CACHED" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compare tags and write new tag if changed
         id: diff
         run: |
-          if [ "${{ steps.check.outputs.latest }}" != "${{ steps.cache.outputs.cached }}" ]; then
+          LATEST="${{ steps.check.outputs.latest }}"
+          CACHED="${{ steps.load.outputs.cached }}"
+
+          if [ "$LATEST" != "$CACHED" ]; then
             echo "updated=true" >> $GITHUB_OUTPUT
-            echo "${{ steps.check.outputs.latest }}" > .cache/yt_dlp_tag
+            echo "$LATEST" > .github/yt_dlp_tag
+            git add .github/yt_dlp_tag
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+            # commit and push the updated tag file
+            git commit -m "ci: update yt-dlp tag to $LATEST" || echo "no-change-to-commit"
+            # push using GITHUB_TOKEN credentials provided by checkout@v4 (persist-credentials: true)
+            git push origin HEAD || echo "push failed (maybe branch protection); continuing"
+
           else
             echo "updated=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Save cached tag
-        if: steps.diff.outputs.updated == 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .cache
-          key: yt-dlp-tag-cache-${{ steps.check.outputs.latest }}
+      # Optional: expose a human-readable job summary
+      - name: Show decision
+        run: |
+          echo "latest: ${{ steps.check.outputs.latest }}"
+          echo "cached: ${{ steps.load.outputs.cached }}"
+          echo "updated: ${{ steps.diff.outputs.updated }}"
 
   build-deploy:
     needs: check-yt-dlp
@@ -59,10 +89,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Set up GCP credentials
         uses: google-github-actions/auth@v3
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
+
       - name: Trigger Cloud Build
         run: |
           gcloud beta builds submit --config cloudbuild.yaml \
