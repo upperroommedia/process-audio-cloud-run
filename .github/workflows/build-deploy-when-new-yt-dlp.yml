@@ -9,6 +9,9 @@ on:
 jobs:
   check-yt-dlp:
     runs-on: ubuntu-latest
+    concurrency:
+      group: yt-dlp-update
+      cancel-in-progress: false
     outputs:
       should_deploy: ${{ steps.diff.outputs.updated }}
     steps:
@@ -22,9 +25,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache
-          key: yt-dlp-tag-cache
+          key: yt-dlp-tag-cache-
           restore-keys: |
-            yt-dlp-tag-
+            yt-dlp-tag-cache-
 
       - name: Load cached tag
         id: cache
