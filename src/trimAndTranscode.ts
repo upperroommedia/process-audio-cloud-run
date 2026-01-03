@@ -74,13 +74,80 @@ const trimAndTranscode = async (
     outputPath: outputFilePath,
   });
 
+  // Calculate dynamic percentage ranges based on trimming parameters
+  // Download is 5x faster than transcoding
+  const DOWNLOAD_SPEED_MULTIPLIER = 5;
+
+  /**
+   * Calculates dynamic percentage ranges for download and transcode phases
+   * @param startTime - Start time in seconds (undefined if no trimming)
+   * @param duration - Duration in seconds (undefined if no trimming)
+   * @param totalDuration - Total audio duration in seconds (optional, for better accuracy)
+   * @returns Object with downloadEndPercent and transcodeStartPercent
+   */
+  const calculateProgressRanges = (
+    startTime?: number,
+    duration?: number,
+    totalDuration?: number
+  ): { downloadEndPercent: number; transcodeStartPercent: number } => {
+    // Scenario 1: No trimming - transcoding starts immediately
+    if (!startTime && !duration) {
+      // Download is minimal since we start transcoding right away
+      // Give download a tiny range (0-2%) for initial buffering
+      return { downloadEndPercent: 2, transcodeStartPercent: 0 };
+    }
+
+    // Scenario 2 & 3: We have trimming parameters
+    // Calculate time ranges
+    const downloadTime = startTime || 0; // Time we need to download before transcoding
+
+    // If we don't have duration but have startTime, we'll transcode from startTime to end
+    // In this case, use a reasonable estimate or default
+    const actualTranscodeTime = duration || (totalDuration ? totalDuration - downloadTime : 1000); // Default to large number if unknown
+
+    // Total time we're processing: download time + transcode time
+    const totalProcessingTime = downloadTime + actualTranscodeTime;
+
+    // Calculate percentage ranges (0-98% for download+transcode, 98-100% for merge)
+    // Formula: (downloadTime / totalProcessingTime) / 5 * 98
+    // This accounts for download being 5x faster than transcoding
+    // Example: 100 min audio, transcode 40-60: (40/60)/5 * 98 = 13.3%
+    const downloadEndPercent =
+      totalProcessingTime > 0
+        ? Math.min(98, Math.round((downloadTime / totalProcessingTime / DOWNLOAD_SPEED_MULTIPLIER) * 98))
+        : 0;
+
+    // Transcode starts where download ends
+    const transcodeStartPercent = downloadEndPercent;
+
+    return { downloadEndPercent, transcodeStartPercent };
+  };
+
+  // Calculate ranges (will be updated if we get totalDuration later)
+  let progressRanges = calculateProgressRanges(startTime, duration);
+
+  log.info('Progress ranges calculated', {
+    startTime,
+    duration,
+    downloadEndPercent: progressRanges.downloadEndPercent,
+    transcodeStartPercent: progressRanges.transcodeStartPercent,
+  });
+
+  let maxDownloadProgress = -1;
   const updateDownloadProgress = (progress: number) => {
     if (!transcodingStarted) {
-      // Scale yt-dlp progress (0-100%) to 0-95% range to match original behavior
-      // This ensures: download 0-95%, trim/transcode 0-95%, merge 95-100%
-      const scaledProgress = Math.round(progress * 0.95);
-      log.debug('YouTube download progress', { progress, scaledProgress });
-      realtimeDBRef.set(scaledProgress);
+      // Scale yt-dlp progress (0-100%) to 0-downloadEndPercent range
+      const scaledProgress = Math.round(progress * (progressRanges.downloadEndPercent / 100));
+      // Only update if progress has increased (prevent backwards jumps)
+      if (scaledProgress > maxDownloadProgress) {
+        maxDownloadProgress = scaledProgress;
+        log.debug('YouTube download progress', {
+          progress,
+          scaledProgress,
+          downloadEndPercent: progressRanges.downloadEndPercent,
+        });
+        realtimeDBRef.set(scaledProgress);
+      }
     }
   };
 
@@ -232,7 +299,9 @@ const trimAndTranscode = async (
     });
 
     let totalTimeMillis: number | undefined;
+    let loggedDurationWarning = false;
     let previousPercent = -1;
+    let actualTranscodeStartPercent: number | undefined; // Fixed starting point for transcode phase
 
     if (!proc) {
       throw new Error('FFmpeg process not initialized');
@@ -284,6 +353,21 @@ const trimAndTranscode = async (
         if (progress.duration && !totalTimeMillis) {
           totalTimeMillis = convertStringToMilliseconds(progress.duration);
           log.info('Detected input duration', { duration: progress.duration, milliseconds: totalTimeMillis });
+          // Recalculate progress ranges with actual total duration for better accuracy
+          const totalDurationSeconds = totalTimeMillis / 1000;
+          progressRanges = calculateProgressRanges(startTime, duration, totalDurationSeconds);
+          log.info('Recalculated progress ranges with total duration', {
+            totalDurationSeconds,
+            downloadEndPercent: progressRanges.downloadEndPercent,
+            transcodeStartPercent: progressRanges.transcodeStartPercent,
+          });
+        } else if (progress.time && !totalTimeMillis && !duration && !loggedDurationWarning) {
+          // Log once when we start seeing time updates but no duration yet (helps debug pipe input issues)
+          loggedDurationWarning = true;
+          log.debug('Processing started but duration not yet detected from ffmpeg', {
+            time: progress.time,
+            note: 'Will use duration parameter if available, otherwise will log time elapsed only',
+          });
         }
 
         if (progress.time) {
@@ -299,7 +383,23 @@ const trimAndTranscode = async (
 
           if (!transcodingStarted) {
             transcodingStarted = true;
-            log.info('Transcoding started');
+            // Use the current download progress as the starting point for transcoding
+            // This ensures no jump - transcoding continues from where download left off
+            // The download progress should have reached at least some value, use that as the starting point
+            const initialTranscodePercent =
+              maxDownloadProgress >= 0 ? maxDownloadProgress : progressRanges.transcodeStartPercent;
+            // Store the fixed starting point for the entire transcode phase
+            actualTranscodeStartPercent = initialTranscodePercent;
+            log.info('Transcoding started', {
+              downloadEndPercent: progressRanges.downloadEndPercent,
+              transcodeStartPercent: progressRanges.transcodeStartPercent,
+              currentDownloadProgress: maxDownloadProgress,
+              initialTranscodePercent,
+            });
+            realtimeDBRef.set(initialTranscodePercent).catch((err) => {
+              log.error('Failed to set initial transcode progress', { error: err });
+            });
+            previousPercent = initialTranscodePercent; // Start transcode progress tracking at current progress
             await docRef
               .update({
                 status: {
@@ -311,23 +411,51 @@ const trimAndTranscode = async (
               .catch((err) => log.error('Failed to update document status', { error: err }));
           }
 
+          // Calculate progress - use duration parameter as fallback if totalTimeMillis isn't available
+          const timeMillis = convertStringToMilliseconds(progress.time);
+          let calculatedDuration: number | undefined;
+
           if (totalTimeMillis) {
-            const timeMillis = convertStringToMilliseconds(progress.time);
-            const calculatedDuration = duration
+            // Use detected duration from ffmpeg
+            calculatedDuration = duration
               ? duration * 1000
               : startTime
               ? totalTimeMillis - startTime * 1000
               : totalTimeMillis;
-            // Calculate percentage (0-100%) then scale to 0-95% range for trim/transcode phase
-            const rawPercent = (timeMillis / calculatedDuration) * 100;
-            const percent = Math.round(Math.max(0, Math.min(95, rawPercent * 0.95)));
-            if (percent !== previousPercent) {
+          } else if (duration) {
+            // Fallback to duration parameter if ffmpeg hasn't detected duration yet
+            calculatedDuration = duration * 1000;
+            log.debug('Using duration parameter for progress calculation', {
+              duration,
+              calculatedDuration,
+              timeMillis,
+            });
+          }
+
+          if (calculatedDuration && calculatedDuration > 0) {
+            // Calculate percentage (0-100%) then scale to actualTranscodeStartPercent-98% range for trim/transcode phase
+            // This continues from download for continuous progress: 0-100%
+            // Use the fixed starting point captured when transcoding began
+            const startPercent = actualTranscodeStartPercent ?? progressRanges.transcodeStartPercent;
+
+            const rawPercent = Math.min(100, Math.max(0, (timeMillis / calculatedDuration) * 100));
+
+            // Scale: 0-100% raw -> startPercent-98% final
+            // Linear interpolation: startPercent + (rawPercent / 100) * (98 - startPercent)
+            const transcodeRange = 98 - startPercent;
+            const calculatedPercent = startPercent + (rawPercent / 100) * transcodeRange;
+            const percent = Math.round(Math.max(startPercent, Math.min(98, calculatedPercent)));
+
+            if (percent > previousPercent) {
               previousPercent = percent;
               log.debug('Processing progress', {
                 percent,
                 timeMillis,
                 calculatedDuration,
                 rawPercent: rawPercent.toFixed(2),
+                hasTotalTimeMillis: !!totalTimeMillis,
+                transcodeStartPercent: progressRanges.transcodeStartPercent,
+                actualStartPercent: startPercent,
               });
               realtimeDBRef.set(percent).catch((err) => {
                 log.error('Failed to update progress in realtimeDB', {
@@ -335,7 +463,21 @@ const trimAndTranscode = async (
                   percent,
                 });
               });
+            } else if (percent < previousPercent) {
+              log.debug('Skipping backwards progress update', {
+                previousPercent,
+                newPercent: percent,
+                timeMillis,
+                rawPercent: rawPercent.toFixed(2),
+              });
             }
+            // If percent === previousPercent, we don't update DB (avoid redundant writes)
+          } else {
+            // Log time elapsed even if we can't calculate percentage
+            log.debug('Processing (duration unknown)', {
+              timeMillis,
+              timeElapsed: progress.time,
+            });
           }
         }
       });

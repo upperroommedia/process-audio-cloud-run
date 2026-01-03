@@ -31,6 +31,7 @@ export const processYouTubeUrl = async (
     throw new Error('getYouTubeStream operation was cancelled');
   }
   let totalBytes = 0;
+  let previousPercent = -1;
 
   //pipes output to stdout
   const args = ['-f', 'bestaudio/best', '-N 4', '--no-playlist', '-o', '-'];
@@ -103,8 +104,13 @@ export const processYouTubeUrl = async (
     }
     if (data.includes('download')) {
       const percent = extractPercent(data.toString());
-      if (percent) {
-        updateProgressCallback(percent);
+      if (percent !== null) {
+        // Only update if percent has changed by an integer value (at least 1%)
+        const percentInt = Math.floor(percent);
+        if (percentInt !== previousPercent) {
+          previousPercent = percentInt;
+          updateProgressCallback(percent);
+        }
       }
     }
     if (data.toString().includes('ERROR')) {

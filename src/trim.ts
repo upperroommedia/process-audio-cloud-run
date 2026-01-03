@@ -139,17 +139,30 @@ const trim = async (
             : startTime
             ? totalTimeMillis - startTime * 1000
             : totalTimeMillis;
-          const percent = Math.round(Math.max(0, ((timeMillis * 0.95) / calculatedDuration) * 100));
-          if (percent !== previousPercent) {
+          // Calculate percentage (0-100%) then scale to 0-90% range for trim phase
+          // This ensures: trim 0-90%, merge 90-100% for continuous progress
+          const rawPercent = (timeMillis / calculatedDuration) * 100;
+          const percent = Math.round(Math.max(0, Math.min(90, rawPercent * 0.9)));
+          // Always log progress (more frequent than DB updates)
+          log.debug('Processing progress', { percent });
+          // Only update DB when percent actually changes (less frequent than logs)
+          if (percent > previousPercent) {
             previousPercent = percent;
-            log.debug('Processing progress', { percent });
             realtimeDBRef.set(percent).catch((err) => {
               log.error('Failed to update progress in realtimeDB', {
                 error: err instanceof Error ? err.message : String(err),
                 percent,
               });
             });
+          } else if (percent < previousPercent) {
+            // Log when we detect backwards progress but don't update DB
+            log.debug('Skipping backwards progress update', {
+              previousPercent,
+              newPercent: percent,
+              timeMillis,
+            });
           }
+          // If percent === previousPercent, we just log (already done above) but don't update DB
         }
       }
     });
