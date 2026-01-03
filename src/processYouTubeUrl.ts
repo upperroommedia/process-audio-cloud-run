@@ -44,7 +44,7 @@ export const processYouTubeUrl = async (
     const cookiesFilePath = path.join(__dirname, 'cookies.txt');
     const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
     const encodedCookies = await cookiesPath.get();
-    
+
     if (encodedCookies.exists()) {
       try {
         // Decode the base64 encoded cookies string

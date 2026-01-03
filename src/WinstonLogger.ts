@@ -17,8 +17,8 @@ if (!isDevelopment) {
         service: 'process-audio-cloud-run',
         version: process.env.K_SERVICE_VERSION || '1.0.0',
       },
-      // Log level mapping
-      level: process.env.LOG_LEVEL || 'info',
+      // Log level mapping - default to 'debug' so debug logs are always written
+      level: process.env.LOG_LEVEL || 'debug',
       // Use labels for filterable metadata (these will be extracted from log entries)
       labels: {
         service: 'process-audio-cloud-run',
@@ -35,7 +35,7 @@ if (!isDevelopment) {
 // Ensures metadata is properly structured at top level for easy filtering
 // LoggingWinston will handle severity mapping and timestamps automatically
 const gcpFormat = winston.format((info) => {
-  // GCP structured logging best practice: 
+  // GCP structured logging best practice:
   // - message should be the main log entry
   // - All metadata should be at top level (not nested) for easy filtering
   // - LoggingWinston will automatically map level to severity and add timestamp
@@ -43,11 +43,10 @@ const gcpFormat = winston.format((info) => {
 })();
 
 const baseLogger = winston.createLogger({
-  level: process.env.LOG_LEVEL || 'info',
-  format: winston.format.combine(
-    gcpFormat,
-    winston.format.json()
-  ),
+  // Default to 'debug' level so debug logs are always written in production
+  // Can be overridden with LOG_LEVEL environment variable if needed
+  level: process.env.LOG_LEVEL || 'debug',
+  format: winston.format.combine(gcpFormat, winston.format.json()),
   transports,
 });
 
@@ -55,20 +54,20 @@ const baseLogger = winston.createLogger({
 // GCP best practices: Use top-level fields for filterable metadata, not nested objects
 function mergeContext(context: LogContext | undefined, meta?: any): any {
   const structuredMeta: Record<string, any> = {};
-  
+
   // Extract context fields to top level for easy filtering
   if (context) {
     if (context.requestId) structuredMeta.requestId = context.requestId;
     if (context.sermonId) structuredMeta.sermonId = context.sermonId;
     if (context.operation) structuredMeta.operation = context.operation;
     // Add any other context fields
-    Object.keys(context).forEach(key => {
+    Object.keys(context).forEach((key) => {
       if (key !== 'requestId' && key !== 'sermonId' && key !== 'operation' && context[key] !== undefined) {
         structuredMeta[key] = context[key];
       }
     });
   }
-  
+
   // Merge additional metadata
   if (meta === undefined || meta === null) {
     return structuredMeta;
@@ -77,13 +76,18 @@ function mergeContext(context: LogContext | undefined, meta?: any): any {
     structuredMeta.value = meta;
   } else if (typeof meta === 'object') {
     // Flatten nested objects to top level for better filtering
-    Object.keys(meta).forEach(key => {
+    Object.keys(meta).forEach((key) => {
       const value = meta[key];
+      // Prioritize sermonId from metadata if not already in context
+      if (key === 'sermonId' && value && !structuredMeta.sermonId) {
+        structuredMeta.sermonId = value;
+        return;
+      }
       // If value is an object, we can either flatten it or keep it nested
       // For GCP, prefer top-level fields when possible
       if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
         // For nested objects, prefix with parent key to avoid collisions
-        Object.keys(value).forEach(nestedKey => {
+        Object.keys(value).forEach((nestedKey) => {
           structuredMeta[`${key}_${nestedKey}`] = value[nestedKey];
         });
       } else {
@@ -91,7 +95,7 @@ function mergeContext(context: LogContext | undefined, meta?: any): any {
       }
     });
   }
-  
+
   return structuredMeta;
 }
 

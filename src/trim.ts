@@ -12,19 +12,19 @@ import { LogContext } from './context';
 // Parse ffmpeg stderr for progress and duration
 function parseFFmpegProgress(stderrLine: string): { time?: string; duration?: string } {
   const result: { time?: string; duration?: string } = {};
-  
+
   // Parse time: time=00:01:23.45
   const timeMatch = stderrLine.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
   if (timeMatch) {
     result.time = timeMatch[1];
   }
-  
+
   // Parse duration: Duration: 00:05:30.12
   const durationMatch = stderrLine.match(/Duration:\s*(\d{2}:\d{2}:\d{2}\.\d{2})/);
   if (durationMatch) {
     result.duration = durationMatch[1];
   }
-  
+
   return result;
 }
 
@@ -41,9 +41,9 @@ const trim = async (
   ctx?: LogContext
 ): Promise<File> => {
   const log = createLoggerWithContext(ctx);
-  
+
   log.info('Starting trim operation', { storageFilePath, startTime, duration, outputPath: outputFilePath });
-  
+
   // Download the raw audio source from storage
   const rawSourceFile = createTempFile(`raw-${path.basename(storageFilePath)}`, tempFiles);
   log.debug('Downloading raw audio source', { source: storageFilePath, destination: rawSourceFile });
@@ -57,47 +57,47 @@ const trim = async (
     contentType: 'audio/mpeg',
     metadata: { contentDisposition, metadata: customMetadata },
   });
-  
+
   // Build ffmpeg command
   const ffmpegPath = getFFmpegPath();
   const args: string[] = [];
-  
+
   // Input seeking for files (before -i)
   if (startTime) {
     args.push('-ss', startTime.toString());
   }
-  
+
   args.push('-i', rawSourceFile);
-  
+
   // Duration
   if (duration) {
     args.push('-t', duration.toString());
   }
-  
+
   // Copy codec (no transcoding)
   args.push('-c', 'copy', '-f', 'mp3', 'pipe:1');
-  
+
   const commandLine = `${ffmpegPath} ${args.join(' ')}`;
   log.info('FFmpeg command', { command: commandLine });
-  
+
   const proc = spawn(ffmpegPath, args, {
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
-  
+
   if (!proc.stdout) {
     throw new Error('FFmpeg stdout is null');
   }
   proc.stdout.pipe(writeStream);
-  
+
   let totalTimeMillis: number | undefined;
   let previousPercent = -1;
-  
+
   const promiseResult = await new Promise<File>((resolve, reject) => {
     proc.on('error', (err) => {
       log.error('FFmpeg spawn error', { error: err });
       reject(err);
     });
-    
+
     proc.on('close', (code, signal) => {
       if (code === 0) {
         log.info('Trim completed successfully');
@@ -107,23 +107,23 @@ const trim = async (
         reject(new Error(`FFmpeg process exited with code ${code}`));
       }
     });
-    
+
     if (!proc.stderr) {
       reject(new Error('FFmpeg stderr is null'));
       return;
     }
-    
+
     proc.stderr.on('data', (data: Buffer) => {
       const stderrLine = data.toString();
-      
+
       // Parse progress and duration
       const progress = parseFFmpegProgress(stderrLine);
-      
+
       if (progress.duration && !totalTimeMillis) {
         totalTimeMillis = convertStringToMilliseconds(progress.duration);
         log.info('Detected input duration', { duration: progress.duration, milliseconds: totalTimeMillis });
       }
-      
+
       if (progress.time) {
         if (cancelToken.isCancellationRequested) {
           log.warn('Cancellation requested, terminating process');
@@ -131,7 +131,7 @@ const trim = async (
           reject(new Error('Trim operation was cancelled'));
           return;
         }
-        
+
         if (totalTimeMillis) {
           const timeMillis = convertStringToMilliseconds(progress.time);
           const calculatedDuration = duration
@@ -140,11 +140,15 @@ const trim = async (
             ? totalTimeMillis - startTime * 1000
             : totalTimeMillis;
           const percent = Math.round(Math.max(0, ((timeMillis * 0.95) / calculatedDuration) * 100));
-          if (percent !== previousPercent && percent % 5 === 0) {
-            // Only log every 5% to reduce noise
+          if (percent !== previousPercent) {
             previousPercent = percent;
             log.debug('Processing progress', { percent });
-            realtimeDBRef.set(percent);
+            realtimeDBRef.set(percent).catch((err) => {
+              log.error('Failed to update progress in realtimeDB', {
+                error: err instanceof Error ? err.message : String(err),
+                percent,
+              });
+            });
           }
         }
       }

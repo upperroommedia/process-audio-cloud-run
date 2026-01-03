@@ -117,10 +117,18 @@ const mergeFiles = async (
         const percent = Math.round(Math.max(0, (timeMillis / durationMillis) * 100));
         // percent is a number between 0 - 100 but we want to scale it to be from 95 - 100
         const scaledPercent = Math.round(percent * 0.05 + 95);
+        // Update progress whenever it changes to ensure smooth updates
         if (scaledPercent !== previousScaledPercent) {
           previousScaledPercent = scaledPercent;
-          log.debug('Merge progress', { percent: scaledPercent });
-          realtimeDBref.set(scaledPercent);
+          // Always log progress at info level so it's written in production
+          log.info('Merge progress', { percent: scaledPercent });
+          // Always update progress in DB regardless of log level - this is critical
+          realtimeDBref.set(scaledPercent).catch((err) => {
+            log.error('Failed to update progress in realtimeDB', { 
+              error: err instanceof Error ? err.message : String(err),
+              percent: scaledPercent 
+            });
+          });
         }
       }
     });

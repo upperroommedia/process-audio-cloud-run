@@ -329,7 +329,12 @@ const trimAndTranscode = async (
                 calculatedDuration,
                 rawPercent: rawPercent.toFixed(2),
               });
-              realtimeDBRef.set(percent);
+              realtimeDBRef.set(percent).catch((err) => {
+                log.error('Failed to update progress in realtimeDB', {
+                  error: err instanceof Error ? err.message : String(err),
+                  percent,
+                });
+              });
             }
           }
         }
