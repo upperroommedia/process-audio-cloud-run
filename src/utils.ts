@@ -178,12 +178,35 @@ export const getDurationSeconds = (filePath: string): Promise<number> => {
   });
 };
 
+/**
+ * Rewrites emulator URLs to use the correct host when running in Docker.
+ * URLs stored in Firestore may contain 127.0.0.1, but inside Docker,
+ * we need to use host.docker.internal to reach the host machine.
+ */
+function rewriteEmulatorUrl(url: string): string {
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const emulatorHost = process.env.FIREBASE_EMULATOR_HOST;
+
+  if (isDevelopment && emulatorHost && emulatorHost !== '127.0.0.1' && emulatorHost !== 'localhost') {
+    // Replace 127.0.0.1 or localhost with the configured emulator host
+    return url
+      .replace(/http:\/\/127\.0\.0\.1:/g, `http://${emulatorHost}:`)
+      .replace(/http:\/\/localhost:/g, `http://${emulatorHost}:`);
+  }
+  return url;
+}
+
 export async function downloadFile(fileUrl: string, outputLocationPath: string): Promise<void> {
   const writer = createWriteStream(outputLocationPath);
+  const rewrittenUrl = rewriteEmulatorUrl(fileUrl);
+
+  if (rewrittenUrl !== fileUrl) {
+    logger.debug('Rewrote emulator URL', { original: fileUrl, rewritten: rewrittenUrl });
+  }
 
   return axios({
     method: 'get',
-    url: fileUrl,
+    url: rewrittenUrl,
     responseType: 'stream',
   }).then((response) => {
     //ensure that the user can call `then()` only when the file has
