@@ -6,33 +6,41 @@ options:
 steps:
   # Step 1: Build Docker image
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
+    args: [
         'build',
-        '--build-arg', 'CACHEBUST=${COMMIT_SHA}',  # force latest yt-dlp layer
-        '-t', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
-        '.'
+        '--build-arg',
+        'CACHEBUST=${COMMIT_SHA}', # force latest yt-dlp layer
+        '-t',
+        'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
+        '.',
       ]
 
   # Step 2: Push Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'push',
-        'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}'
-      ]
+    args: ['push', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}']
 
   # Step 3: Deploy to Cloud Run (private service)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
       [
-        'run', 'deploy', 'process-audio',
-        '--image', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
-        '--region', 'us-central1',
-        '--platform', 'managed'
+        'run',
+        'deploy',
+        'process-audio',
+        '--image',
+        'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
+        '--region',
+        'us-central1',
+        '--platform',
+        'managed',
+        '--cpu',
+        '4',
+        '--memory',
+        '2Gi',
+        '--cpu-boost',
+        '--concurrency',
+        '1',
       ]
 
 images:
   - 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}'
-

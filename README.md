@@ -101,10 +101,13 @@ curl \
 https://process-audio-yshbijirxq-uc.a.run.app/process-audio \
 -d '{
     "data":{
-                "id": "ID",
-                "youtubeUrl": "https://www.youtube.com/watch?v=MUIw7qrSW6k",
-                "startTime": 5155,
-                "duration": 1320
+                "deleteOriginal": true,
+                "id": "fbff2e40-ff55-4ce0-95b8-60ed455188af",
+                "introUrl": "https://firebasestorage.googleapis.com/v0/b/urm-app.appspot.com/o/intros%2FBible%20Studies_intro.mp3?alt=media&token=21e3ed85-c569-4609-9f71-258f2cadc491",
+                "outroUrl": "https://firebasestorage.googleapis.com/v0/b/urm-app.appspot.com/o/outros%2Fdefault_outro.mp3?alt=media&token=c0748088-dc68-4619-a9a7-ec4f6272f055",
+                "duration": 713.5,
+                "startTime": 2570.5,
+                "youtubeUrl": "https://www.youtube.com/watch?v=MVQ_TCo28jU"
             }
 }'
 ```
