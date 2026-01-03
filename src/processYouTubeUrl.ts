@@ -10,6 +10,15 @@ import { LogContext } from './context';
 import { getFFmpegPath } from './utils';
 import dns from 'node:dns/promises';
 
+/**
+ * Result from getYouTubeAudioUrl containing the direct stream URL and metadata
+ */
+export interface YouTubeAudioUrlResult {
+  url: string;
+  format: string;
+  duration?: number;
+}
+
 function isRunningInDocker(): boolean {
   try {
     return fs.existsSync('/.dockerenv') || fs.existsSync('/run/.containerenv') || process.env.DOCKER === 'true';
@@ -52,6 +61,158 @@ function formatTimeForDownloadSections(seconds: number): string {
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
 }
 
+/**
+ * Prepares cookies arguments for yt-dlp based on environment
+ * Returns the args array and the path to the cookies file (if created)
+ */
+async function prepareCookiesArgs(
+  realtimeDB: Database,
+  isDevelopment: boolean,
+  log: ReturnType<typeof createLoggerWithContext>
+): Promise<{ args: string[]; cookiesFilePath?: string }> {
+  const args: string[] = [];
+  let cookiesFilePath: string | undefined;
+
+  if (isDevelopment) {
+    if (isRunningInDocker()) {
+      log.warn('Skipping --cookies-from-browser in Docker (cookies cannot be decrypted without host keychain)');
+    } else {
+      log.info('Using cookies from Chrome browser (development mode)');
+      args.push('--cookies-from-browser', 'chrome');
+    }
+  } else {
+    cookiesFilePath = path.join(__dirname, 'cookies.txt');
+    const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
+    const encodedCookies = await cookiesPath.get();
+
+    if (encodedCookies.exists()) {
+      try {
+        const decodedCookies = Buffer.from(encodedCookies.val(), 'base64').toString('utf8');
+        fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
+        log.debug('Cookies file created from database');
+        args.push('--cookies', cookiesFilePath);
+      } catch (err) {
+        log.error('Failed to decode and write cookies file', { error: err });
+        throw new Error(`Failed to decode and write cookies file: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      log.error('yt-dlp-cookies not found in realtimeDB');
+      throw new Error('yt-dlp-cookies not found in realtimeDB - cookies are required for YouTube downloads');
+    }
+  }
+
+  return { args, cookiesFilePath };
+}
+
+/**
+ * Gets the direct audio stream URL from YouTube using yt-dlp.
+ * This URL can be used directly with FFmpeg for precise seeking.
+ *
+ * This approach is MORE RELIABLE than --download-sections because:
+ * 1. We control the FFmpeg command directly (no silent failures)
+ * 2. FFmpeg input seeking on HTTP URLs uses range requests (efficient)
+ * 3. If seeking fails, FFmpeg will error out (not silently download from time 0)
+ *
+ * @returns The direct audio stream URL and format info
+ */
+export const getYouTubeAudioUrl = async (
+  ytdlpPath: string,
+  url: YouTubeUrl,
+  realtimeDB: Database,
+  ctx?: LogContext
+): Promise<YouTubeAudioUrlResult> => {
+  const log = createLoggerWithContext(ctx);
+  const isDevelopment = process.env.NODE_ENV === 'development';
+
+  log.info('Extracting YouTube audio stream URL', { url, isDevelopment });
+
+  // Build yt-dlp command to get direct URL
+  // -g (--get-url): Print the actual media URL
+  // -f bestaudio: Get best audio format
+  // --print format: Print format info
+  const args = [
+    '-f',
+    'bestaudio/best',
+    '-g', // Get URL only, don't download
+    '--no-playlist',
+    '--print',
+    '%(duration)s', // Print duration
+    '--print',
+    '%(ext)s', // Print extension/format
+  ];
+
+  // Add cookies
+  const { args: cookieArgs } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  args.push(...cookieArgs);
+
+  // Add JS runtime
+  args.push('--no-js-runtimes', '--js-runtimes', 'node');
+
+  args.push(url);
+
+  const command = `${ytdlpPath} ${args.join(' ')}`;
+  log.debug('Executing yt-dlp to get audio URL', { command });
+
+  return new Promise<YouTubeAudioUrlResult>((resolve, reject) => {
+    const ytdlp = spawn(ytdlpPath, args);
+    let stdout = '';
+    let stderr = '';
+
+    ytdlp.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    ytdlp.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    ytdlp.on('error', (err) => {
+      log.error('yt-dlp spawn error while getting URL', { error: err });
+      reject(new Error(`yt-dlp spawn error: ${err}`));
+    });
+
+    ytdlp.on('close', (code) => {
+      if (code === 0) {
+        const lines = stdout
+          .trim()
+          .split('\n')
+          .filter((line) => line.trim());
+
+        // Output format: duration, ext, url (based on --print order)
+        if (lines.length >= 3) {
+          const duration = parseFloat(lines[0]) || undefined;
+          const format = lines[1] || 'unknown';
+          const streamUrl = lines[2];
+
+          if (streamUrl && streamUrl.startsWith('http')) {
+            log.info('Successfully extracted YouTube audio URL', {
+              format,
+              duration,
+              urlLength: streamUrl.length,
+              urlPreview: streamUrl.substring(0, 100) + '...',
+            });
+            resolve({ url: streamUrl, format, duration });
+          } else {
+            log.error('Invalid URL in yt-dlp output', { lines });
+            reject(new Error('yt-dlp did not return a valid URL'));
+          }
+        } else if (lines.length >= 1 && lines[lines.length - 1].startsWith('http')) {
+          // Fallback: just a URL
+          const streamUrl = lines[lines.length - 1];
+          log.info('Extracted YouTube audio URL (minimal info)', { urlLength: streamUrl.length });
+          resolve({ url: streamUrl, format: 'unknown' });
+        } else {
+          log.error('Unexpected yt-dlp output format', { stdout, stderr, lines });
+          reject(new Error(`Failed to parse yt-dlp output: ${stdout}`));
+        }
+      } else {
+        log.error('yt-dlp failed to get URL', { code, stderr });
+        reject(new Error(`yt-dlp exited with code ${code}: ${stderr}`));
+      }
+    });
+  });
+};
+
 export const processYouTubeUrl = async (
   ytdlpPath: string,
   url: YouTubeUrl,
@@ -66,7 +227,7 @@ export const processYouTubeUrl = async (
   const log = createLoggerWithContext(ctx);
   const isDevelopment = process.env.NODE_ENV === 'development';
 
-  log.info('Starting YouTube download', { url, isDevelopment, startTime, duration });
+  log.info('Starting YouTube download (full stream)', { url, isDevelopment, startTime, duration });
 
   if (cancelToken.isCancellationRequested) {
     throw new Error('getYouTubeStream operation was cancelled');
@@ -74,54 +235,15 @@ export const processYouTubeUrl = async (
   let totalBytes = 0;
   let previousPercent = -1;
 
-  //pipes output to stdout
-  const args = ['-f', 'bestaudio/best', '-N 4', '--no-playlist', '-o', '-'];
+  // Pipes output to stdout - downloads FULL stream, seeking handled by our FFmpeg
+  // NOTE: For precise section downloads with seeking, use getYouTubeAudioUrl + FFmpeg input seeking instead
+  const args = ['-f', 'bestaudio/best', '-N', '4', '--no-playlist', '-o', '-'];
 
-  // NOTE: --download-sections with -o - (stdout) is unreliable due to ffmpeg exit code 251
-  // when using -c copy (stream copy) with HTTP input seeking to stdout.
-  // Instead, we download the full stream and handle seeking in our ffmpeg command.
-  // This is less efficient but more reliable.
+  // Add cookies
+  const { args: cookieArgs } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  args.push(...cookieArgs);
 
-  if (isDevelopment) {
-    // In development, prefer cookies from Chrome browser when running on the host.
-    // In Docker on macOS, Chrome cookies are typically not decryptable inside the container
-    // since the host keychain is unavailable. In that case, skip cookies.
-    if (isRunningInDocker()) {
-      log.warn('Skipping --cookies-from-browser in Docker (cookies cannot be decrypted without host keychain)', {
-        note: 'If you need cookies in Docker, provide plaintext cookies via realtimeDB or a mounted cookies.txt',
-      });
-    } else {
-      log.info('Using cookies from Chrome browser (development mode)');
-      args.push('--cookies-from-browser', 'chrome');
-    }
-  } else {
-    // In production, use cookies from database
-    const cookiesFilePath = path.join(__dirname, 'cookies.txt');
-    const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
-    const encodedCookies = await cookiesPath.get();
-
-    if (encodedCookies.exists()) {
-      try {
-        // Decode the base64 encoded cookies string
-        const decodedCookies = Buffer.from(encodedCookies.val(), 'base64').toString('utf8');
-
-        // Write the decoded contents to cookies.txt
-        fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
-        log.debug('Cookies file created from database');
-        args.push('--cookies', cookiesFilePath);
-      } catch (err) {
-        log.error('Failed to decode and write cookies file', { error: err });
-        throw new Error(`Failed to decode and write cookies file: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    } else {
-      log.error('yt-dlp-cookies not found in realtimeDB');
-      throw new Error('yt-dlp-cookies not found in realtimeDB - cookies are required for YouTube downloads');
-    }
-  }
-
-  // yt-dlp now expects an external JS runtime for full YouTube support.
-  // We use Node.js since it's already installed in our container.
-  // Clear default (deno) first, then enable node.
+  // Add JS runtime
   args.push('--no-js-runtimes', '--js-runtimes', 'node');
   log.debug('Using Node.js as JavaScript runtime for yt-dlp');
 
@@ -317,36 +439,9 @@ export const downloadYouTubeSection = async (
   args.push('--no-js-runtimes', '--js-runtimes', 'node');
   log.debug('Using Node.js as JavaScript runtime for yt-dlp');
 
-  if (isDevelopment) {
-    if (isRunningInDocker()) {
-      log.warn('Skipping --cookies-from-browser in Docker (cookies cannot be decrypted without host keychain)', {
-        note: 'If you need cookies in Docker, provide plaintext cookies via realtimeDB or a mounted cookies.txt',
-      });
-    } else {
-      log.info('Using cookies from Chrome browser (development mode)');
-      args.push('--cookies-from-browser', 'chrome');
-    }
-  } else {
-    // In production, use cookies from database
-    const cookiesFilePath = path.join(__dirname, 'cookies.txt');
-    const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
-    const encodedCookies = await cookiesPath.get();
-
-    if (encodedCookies.exists()) {
-      try {
-        const decodedCookies = Buffer.from(encodedCookies.val(), 'base64').toString('utf8');
-        fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
-        log.debug('Cookies file created from database');
-        args.push('--cookies', cookiesFilePath);
-      } catch (err) {
-        log.error('Failed to decode and write cookies file', { error: err });
-        throw new Error(`Failed to decode and write cookies file: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    } else {
-      log.error('yt-dlp-cookies not found in realtimeDB');
-      throw new Error('yt-dlp-cookies not found in realtimeDB - cookies are required for YouTube downloads');
-    }
-  }
+  // Add cookies
+  const { args: cookieArgs } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  args.push(...cookieArgs);
 
   args.push(url);
 
