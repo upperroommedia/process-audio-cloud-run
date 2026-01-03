@@ -318,11 +318,17 @@ const trimAndTranscode = async (
               : startTime
               ? totalTimeMillis - startTime * 1000
               : totalTimeMillis;
-            const percent = Math.round(Math.max(0, ((timeMillis * 0.95) / calculatedDuration) * 100));
-            if (percent !== previousPercent && percent % 5 === 0) {
-              // Only log every 5% to reduce noise
+            // Calculate percentage (0-100%) then scale to 0-95% range for trim/transcode phase
+            const rawPercent = (timeMillis / calculatedDuration) * 100;
+            const percent = Math.round(Math.max(0, Math.min(95, rawPercent * 0.95)));
+            if (percent !== previousPercent) {
               previousPercent = percent;
-              log.debug('Processing progress', { percent });
+              log.debug('Processing progress', {
+                percent,
+                timeMillis,
+                calculatedDuration,
+                rawPercent: rawPercent.toFixed(2),
+              });
               realtimeDBRef.set(percent);
             }
           }
