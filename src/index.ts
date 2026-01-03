@@ -73,13 +73,17 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
   const timeoutMillis = (TIMEOUT_SECONDS - 30) * 1000; // 30s less than timeoutSeconds
   const data = request.body?.data;
 
-  // Create context for this request
-  const ctx = createContext(data?.id, 'process-audio');
+  // Create context for this request - ensure sermonId is always set
+  const sermonId = data?.id;
+  const ctx = createContext(sermonId, 'process-audio');
+  // Ensure sermonId is set even if data.id was undefined (fallback to empty string to maintain context structure)
+  if (!ctx.sermonId && sermonId) {
+    ctx.sermonId = sermonId;
+  }
   const log = createLoggerWithContext(ctx);
 
   log.info('Request received', {
     hasData: !!data,
-    sermonId: data?.id,
     sourceType: 'youtubeUrl' in (data || {}) ? 'youtube' : 'storageFilePath' in (data || {}) ? 'storage' : 'unknown',
   });
 

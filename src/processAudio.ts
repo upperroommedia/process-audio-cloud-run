@@ -32,7 +32,12 @@ export const processAudio = async (
   ctx?: LogContext
 ): Promise<void> => {
   const fileName = audioSource.id;
-  const log = createLoggerWithContext(ctx);
+  // Ensure sermonId is always set in context - use fileName (which is the sermonId) if not in ctx
+  const contextWithSermonId = ctx ? { ...ctx } : createContext(fileName, 'process-audio');
+  if (!contextWithSermonId.sermonId && fileName) {
+    contextWithSermonId.sermonId = fileName;
+  }
+  const log = createLoggerWithContext(contextWithSermonId);
   const tempFiles = new Set<string>();
 
   log.info('Starting audio processing', {
@@ -45,7 +50,7 @@ export const processAudio = async (
     hasOutro: !!outroUrl,
   });
 
-  await logMemoryUsage('Initial Memory Usage', ctx);
+  await logMemoryUsage('Initial Memory Usage', contextWithSermonId);
 
   // Log Firestore connection details
   const isDevelopment = process.env.NODE_ENV === 'development';
@@ -142,7 +147,9 @@ export const processAudio = async (
       },
     });
 
-    const trimCtx = createChildContext(ctx || createContext(fileName), 'trim');
+    // Ensure sermonId is always included in context
+    // Ensure sermonId is preserved in child context
+    const trimCtx = createChildContext(contextWithSermonId, 'trim');
 
     if (skipTranscode) {
       if (audioSource.type !== 'StorageFilePath') {
@@ -218,7 +225,8 @@ export const processAudio = async (
       });
       const outputFilePath = `intro-outro-sermons/${path.basename(fileName)}`;
 
-      const mergeCtx = createChildContext(ctx || createContext(fileName), 'merge');
+      // Ensure sermonId is preserved in child context
+      const mergeCtx = createChildContext(contextWithSermonId, 'merge');
       const mergedOutputFile = await mergeFiles(
         cancelToken,
         bucket,
@@ -231,7 +239,7 @@ export const processAudio = async (
         mergeCtx
       );
       log.info('Files merged successfully', { outputPath: mergedOutputFile.name });
-      await logMemoryUsage('Memory Usage after merge', ctx);
+      await logMemoryUsage('Memory Usage after merge', contextWithSermonId);
     } else {
       log.debug('No intro or outro, skipping merge');
     }
