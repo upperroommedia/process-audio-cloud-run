@@ -70,8 +70,12 @@ const trimAndTranscode = async (
 
     // Download the raw audio source from storage
 
-    const proc = ffmpeg().format('mp3').input(inputSource);
-    if (startTime) proc.setStartTime(startTime);
+    const proc = ffmpeg().format('mp3');
+    // Always place -ss before -i for consistent behavior with both streams and files
+    if (startTime) {
+      proc.inputOptions(['-ss', startTime.toString()]);
+    }
+    proc.input(inputSource);
     if (duration) proc.setDuration(duration);
 
     proc
