@@ -42,6 +42,31 @@ process-audio
 
 to run the image with access to the 8080 port. Replace the path of the Credentials with the appropriate path
 
+### Using Firebase Emulator with Docker
+
+When running the Docker container with the Firebase emulator, you need to configure the container to connect to the emulator running on your host machine:
+
+```
+docker run \
+-e NODE_ENV=development \
+-e GOOGLE_APPLICATION_CREDENTIALS="/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json" \
+-e FIREBASE_EMULATOR_HOST="host.docker.internal" \
+-e FIRESTORE_EMULATOR_PORT="8081" \
+-e FIREBASE_AUTH_EMULATOR_PORT="9099" \
+-e FIREBASE_STORAGE_EMULATOR_PORT="9199" \
+-e FIREBASE_DATABASE_EMULATOR_PORT="9000" \
+-v /Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json:/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json \
+--env-file .env \
+-p 8080:8080 \
+process-audio
+```
+
+**Note:**
+
+- `FIREBASE_EMULATOR_HOST` should be `host.docker.internal` on Mac/Windows, or your host machine's IP address on Linux
+- Make sure your Firebase emulator ports match the values you set (defaults: Firestore 8081, Auth 9099, Storage 9199, Database 9000)
+- If your app uses port 8080, the Firestore emulator will typically use a different port (check your emulator startup logs)
+
 ## Deploying to Google Cloud Run
 
 1. Build the Docker image:
@@ -102,21 +127,21 @@ http://localhost:8080/process-audio \
 }'
 ```
 
-
 # INSTRUCTIONS FOR ROTATING YT-DLP COOKIES
+
 > Follow these instructions: https://github.com/yt-dlp/yt-dlp/wiki/Extractors
 
-1. Open a new private browsing/incognito window and log into YouTube (use the auth@upperroommedia.org google profile password Iam***)
+1. Open a new private browsing/incognito window and log into YouTube (use the auth@upperroommedia.org google profile password Iam\*\*\*)
 2. In same window and same tab from step 1, navigate to https://www.youtube.com/robots.txt (this should be the only private/incognito browsing tab open)
 3. Export youtube.com cookies from the browser, then close the private browsing/incognito window so that the session is never opened in the browser again. (use the get cookies extension and export all cookies)
 4. encode the `cookies.txt` by running the following command:
+
 ```zh
 cat cookies.txt | base64 | pbcopy
 ```
+
 5. Navigate (in a normal chrome window) to https://console.firebase.google.com/project/urm-app/database/urm-app-default-rtdb/data and paste the encoded value in the `yt-dlp-cookies` field
 
-
-
-
 ## Download the latest yt-dlp binary
+
 https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp

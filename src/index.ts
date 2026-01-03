@@ -1,11 +1,5 @@
 import express, { Request } from 'express';
-import {
-  executeWithTimout,
-  getAudioSource,
-  loadStaticFFMPEG,
-  logMemoryUsage,
-  validateAddIntroOutroData,
-} from './utils';
+import { executeWithTimeout, getAudioSource, getFFmpegPath, logMemoryUsage, validateAddIntroOutroData } from './utils';
 import { ProcessAudioInputType, sermonStatusType, uploadStatus, sermonStatus } from './types';
 import { AxiosError, isAxiosError } from 'axios';
 import { processAudio } from './processAudio';
@@ -13,25 +7,54 @@ import { CancelToken } from './CancelToken';
 import { firestoreAdminSermonConverter } from './firestoreAdminDataConverter';
 import { TIMEOUT_SECONDS } from './consts';
 import firebaseAdmin from './firebaseAdmin';
-import logger from './WinstonLogger';
+import logger, { createLoggerWithContext } from './WinstonLogger';
+import { createContext } from './context';
+
 const app = express();
 app.use(express.json());
 // get the path to the yt-dlp binary
 const ytdlpPath = 'yt-dlp';
 
-logger.info('ytdlpPath', ytdlpPath);
+logger.info('Service initializing', { ytdlpPath });
 
 logger.info('Loading storage, realtimeDB and firestore');
 const bucket = firebaseAdmin.storage().bucket();
 const realtimeDB = firebaseAdmin.database();
 const db = firebaseAdmin.firestore();
 
-logger.info('Loading ffmpeg');
-const ffmpeg = loadStaticFFMPEG();
+// Log Firestore connection details after initialization
+const isDevelopment = process.env.NODE_ENV === 'development';
+if (isDevelopment) {
+  const firestoreEmulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
+  logger.info('Firestore initialized', {
+    isDevelopment,
+    firestoreEmulatorHost: firestoreEmulatorHost || 'not set (using production)',
+    firestoreUrl: firestoreEmulatorHost ? `http://${firestoreEmulatorHost}` : 'https://firestore.googleapis.com',
+  });
+
+  // Test Firestore connection asynchronously (non-blocking)
+  (async () => {
+    try {
+      const testRef = db.collection('_test_connection').doc('_test');
+      await testRef.set({ test: true, timestamp: Date.now() });
+      await testRef.delete();
+      logger.info('Firestore emulator connection test successful');
+    } catch (error) {
+      logger.error('Firestore emulator connection test failed', {
+        error: error instanceof Error ? error.message : String(error),
+        firestoreEmulatorHost,
+        hint: 'Make sure the emulator is running on 0.0.0.0 (not 127.0.0.1) and accessible from Docker',
+      });
+    }
+  })();
+}
+
+logger.info('Initializing ffmpeg');
+getFFmpegPath(); // Initialize and verify ffmpeg is available
+logger.info('Service ready');
 
 app.get('/', (req, res) => {
   const VERSION = '1.1.0';
-  logger.info('GET /', `Process Audio Running version ${VERSION}`);
   res.send(`
   Process Audio Running version ${VERSION}
   Post to /process-audio with data in the format of
@@ -48,13 +71,21 @@ app.get('/', (req, res) => {
 
 app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioInputType }>, res) => {
   const timeoutMillis = (TIMEOUT_SECONDS - 30) * 1000; // 30s less than timeoutSeconds
-  // set timeout to 30 seconds less than timeoutSeconds then throw error if it takes longer than that
-  logger.info('POST /process-audio', request.body);
-
   const data = request.body?.data;
+
+  // Create context for this request
+  const ctx = createContext(data?.id, 'process-audio');
+  const log = createLoggerWithContext(ctx);
+
+  log.info('Request received', {
+    hasData: !!data,
+    sermonId: data?.id,
+    sourceType: 'youtubeUrl' in (data || {}) ? 'youtube' : 'storageFilePath' in (data || {}) ? 'storage' : 'unknown',
+  });
 
   // data checks
   if (!data || !validateAddIntroOutroData(data)) {
+    log.warn('Invalid request data');
     res.status(400).send(
       `Invalid body: body must be an object with the following field: 
          id (string),
@@ -77,10 +108,9 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
 
   try {
     const cancelToken = new CancelToken();
-    await executeWithTimout(
+    await executeWithTimeout(
       () =>
         processAudio(
-          ffmpeg,
           ytdlpPath,
           cancelToken,
           bucket,
@@ -94,11 +124,13 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
           data.deleteOriginal,
           data.skipTranscode,
           data.introUrl,
-          data.outroUrl
+          data.outroUrl,
+          ctx
         ),
       cancelToken.cancel,
       timeoutMillis
     );
+    log.info('Request completed successfully');
     res.status(200).send();
   } catch (e) {
     let message = 'Something Went Wrong';
@@ -107,11 +139,15 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
     } else if (isAxiosError(e)) {
       const axiosError = e as AxiosError;
       message = axiosError.message;
-    } else if (e instanceof Error) {
-      message = e.message;
     }
+
+    log.error('Request failed', {
+      error: message,
+      errorType: e?.constructor?.name,
+      stack: e instanceof Error ? e.stack : undefined,
+    });
+
     try {
-      logger.info('Updating audioStatus to ERROR');
       await docRef.update({
         status: {
           ...sermonStatus,
@@ -119,17 +155,16 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
           message: message,
         },
       });
-    } catch (_e) {
-      logger.error('Error Updating Document with docRef', docRef.path);
+    } catch (updateError) {
+      log.error('Failed to update document status', { error: updateError });
     }
-    logger.error('Error', e);
     res.status(500).send(message);
   } finally {
-    await logMemoryUsage('Final Memory Usage');
+    await logMemoryUsage('Final Memory Usage', ctx);
   }
 });
 
 const port = parseInt(process.env.PORT ?? '') || 8080;
 app.listen(port, () => {
-  logger.info(`Process Audio Service running on port: ${port}`);
+  logger.info('Service started', { port });
 });

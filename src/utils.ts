@@ -1,15 +1,15 @@
 import os from 'os';
 import path from 'path';
 import ffmpegStatic from 'ffmpeg-static';
-import ffmpeg from 'fluent-ffmpeg';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync } from 'fs';
 import { readdir, stat } from 'fs/promises';
 import { path as ffprobeStatic } from 'ffprobe-static';
 import { ProcessAudioInputType, AudioSource, CustomMetadata, FilePaths } from './types';
 import { Bucket } from '@google-cloud/storage';
 import axios from 'axios';
-import logger from './WinstonLogger';
+import logger, { createLoggerWithContext } from './WinstonLogger';
+import { LogContext } from './context';
 
 export const throwErrorOnSpecificStderr = (stderrLine: string) => {
   const errorMessages = ['Output file is empty'];
@@ -20,7 +20,8 @@ export const throwErrorOnSpecificStderr = (stderrLine: string) => {
   }
 };
 
-export const logMemoryUsage = async (message: string) => {
+export const logMemoryUsage = async (message: string, ctx?: LogContext) => {
+  const log = createLoggerWithContext(ctx);
   const memoryUsage = process.memoryUsage();
   const tempDir = os.tmpdir();
   const files = await readdir(tempDir);
@@ -32,14 +33,14 @@ export const logMemoryUsage = async (message: string) => {
     totalSize += fileStats.size;
   }
   const memoryUsageInMB = {
-    rss: (memoryUsage.rss / (1024 * 1024)).toFixed(2), // Resident Set Size
-    heapTotal: (memoryUsage.heapTotal / (1024 * 1024)).toFixed(2), // Total size of the allocated heap
-    heapUsed: (memoryUsage.heapUsed / (1024 * 1024)).toFixed(2), // Actual memory used
-    external: (memoryUsage.external / (1024 * 1024)).toFixed(2), // Memory used by C++ objects bound to JavaScript objects
-    tempDir: (totalSize / (1024 * 1024)).toFixed(2), // Memory used by the tempDir in MB
+    rss: parseFloat((memoryUsage.rss / (1024 * 1024)).toFixed(2)), // Resident Set Size
+    heapTotal: parseFloat((memoryUsage.heapTotal / (1024 * 1024)).toFixed(2)), // Total size of the allocated heap
+    heapUsed: parseFloat((memoryUsage.heapUsed / (1024 * 1024)).toFixed(2)), // Actual memory used
+    external: parseFloat((memoryUsage.external / (1024 * 1024)).toFixed(2)), // Memory used by C++ objects bound to JavaScript objects
+    tempDir: parseFloat((totalSize / (1024 * 1024)).toFixed(2)), // Memory used by the tempDir in MB
   };
 
-  logger.debug(message, memoryUsageInMB);
+  log.debug(message, memoryUsageInMB);
 };
 
 export const createTempFile = (fileName: string, tempFiles: Set<string>) => {
@@ -88,17 +89,21 @@ function logFFMPEGVersion(ffmpegStaticPath: string) {
   });
 }
 
-export function loadStaticFFMPEG(): typeof ffmpeg {
+export function getFFmpegPath(): string {
   if (!ffmpegStatic) {
-    logger.error('ffmpeg-static not found');
-  } else {
-    logFFMPEGVersion(ffmpegStatic);
-    logger.info('ffmpeg-static found', ffmpegStatic);
-    ffmpeg.setFfmpegPath(ffmpegStatic);
-    logger.info('ffprobe-static found', ffprobeStatic);
-    ffmpeg.setFfprobePath(ffprobeStatic);
+    throw new Error('ffmpeg-static not found');
   }
-  return ffmpeg;
+  logFFMPEGVersion(ffmpegStatic);
+  logger.info('ffmpeg-static found', ffmpegStatic);
+  logger.info('ffprobe-static found', ffprobeStatic);
+  return ffmpegStatic;
+}
+
+export function getFFprobePath(): string {
+  if (!ffprobeStatic) {
+    throw new Error('ffprobe-static not found');
+  }
+  return ffprobeStatic;
 }
 
 export const uploadSermon = async (
@@ -121,11 +126,37 @@ export const uploadSermon = async (
 
 export const getDurationSeconds = (filePath: string): Promise<number> => {
   return new Promise((resolve, reject) => {
-    ffmpeg.ffprobe(filePath, (err, metadata) => {
-      if (err) {
-        reject(err);
+    const ffprobePath = getFFprobePath();
+    const proc = spawn(ffprobePath, ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', filePath]);
+
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+
+    proc.on('close', (code) => {
+      if (code !== 0) {
+        reject(new Error(`ffprobe failed with code ${code}: ${stderr}`));
+        return;
       }
-      resolve(metadata?.format?.duration || 0);
+
+      try {
+        const metadata = JSON.parse(stdout);
+        const duration = parseFloat(metadata.format?.duration || '0');
+        resolve(duration);
+      } catch (err) {
+        reject(new Error(`Failed to parse ffprobe output: ${err}`));
+      }
+    });
+
+    proc.on('error', (err) => {
+      reject(err);
     });
   });
 };
@@ -179,7 +210,7 @@ export const downloadFiles = async (
   return tempFilePaths;
 };
 
-export async function executeWithTimout<T>(
+export async function executeWithTimeout<T>(
   asyncFunc: () => Promise<T>,
   cancelFunc: () => void,
   delay: number

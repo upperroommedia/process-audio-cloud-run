@@ -11,10 +11,10 @@ import trimAndTranscode from './trimAndTranscode';
 import mergeFiles from './mergeFiles';
 import { PROCESSED_SERMONS_BUCKET } from './consts';
 import trim from './trim';
-import logger from './WinstonLogger';
+import { createLoggerWithContext } from './WinstonLogger';
+import { LogContext, createChildContext, createContext } from './context';
 
 export const processAudio = async (
-  ffmpeg: typeof import('fluent-ffmpeg'),
   ytdlpPath: string,
   cancelToken: CancelToken,
   bucket: Bucket,
@@ -28,34 +28,80 @@ export const processAudio = async (
   deleteOriginal?: boolean,
   skipTranscode?: boolean,
   introUrl?: string,
-  outroUrl?: string
+  outroUrl?: string,
+  ctx?: LogContext
 ): Promise<void> => {
   const fileName = audioSource.id;
-  await logMemoryUsage('Initial Memory Usage');
+  const log = createLoggerWithContext(ctx);
   const tempFiles = new Set<string>();
-  // the document may not exist yet, if it deosnt wait 5 seconds and try again do this for a max of 3 times before throwing an error
+
+  log.info('Starting audio processing', {
+    fileName,
+    startTime,
+    duration,
+    sourceType: audioSource.type,
+    skipTranscode: !!skipTranscode,
+    hasIntro: !!introUrl,
+    hasOutro: !!outroUrl,
+  });
+
+  await logMemoryUsage('Initial Memory Usage', ctx);
+
+  // Log Firestore connection details
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const firestoreEmulatorHost = process.env.FIRESTORE_EMULATOR_HOST;
+  const documentPath = docRef.path;
+
+  log.info('Attempting to access Firestore document', {
+    documentPath,
+    isDevelopment,
+    firestoreEmulatorHost: firestoreEmulatorHost || 'production',
+    firestoreUrl: firestoreEmulatorHost ? `http://${firestoreEmulatorHost}` : 'https://firestore.googleapis.com',
+  });
+
+  // the document may not exist yet, if it doesn't wait 5 seconds and try again do this for a max of 3 times before throwing an error
   const maxTries = 3;
   let currentTry = 0;
   let docFound = false;
   let title = 'untitled';
   while (currentTry < maxTries) {
-    logger.info(`Checking if document exists attempt: ${currentTry + 1}/${maxTries}`);
+    currentTry++;
+    log.debug('Checking if document exists', {
+      attempt: currentTry,
+      maxTries,
+      documentPath,
+      firestoreEmulatorHost: firestoreEmulatorHost || 'production',
+    });
+
     const doc = await docRef.get();
 
     if (doc.exists) {
       docFound = true;
       title = doc.data()?.title || 'No title found';
+      log.info('Document found', { documentPath, title, attempt: currentTry });
       break;
     }
-    logger.info(`No document exists attempt: ${currentTry + 1}/${maxTries}`);
 
-    currentTry++;
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    if (currentTry < maxTries) {
+      log.debug('No document exists, retrying', {
+        attempt: currentTry,
+        maxTries,
+        documentPath,
+        nextRetryIn: '5 seconds',
+      });
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
   }
 
-  logger.info('Out of while loop');
   if (!docFound) {
-    throw new Error(`Sermon Document ${fileName} Not Found`);
+    log.error('Sermon document not found after retries', {
+      fileName,
+      attempts: maxTries,
+      documentPath,
+      firestoreEmulatorHost: firestoreEmulatorHost || 'production',
+      firestoreUrl: firestoreEmulatorHost ? `http://${firestoreEmulatorHost}` : 'https://firestore.googleapis.com',
+    });
+    throw new Error(`Sermon Document ${fileName} Not Found at path: ${documentPath}`);
   }
 
   try {
@@ -78,13 +124,16 @@ export const processAudio = async (
       audioFilesToMerge.OUTRO = outroUrl;
       customMetadata.outroUrl = outroUrl;
     }
-    logger.info('Audio File Download Paths', audioFilesToMerge);
     if (cancelToken.isCancellationRequested) return;
+
     const trimMessage = skipTranscode
       ? 'Trimming'
       : audioSource.type === 'StorageFilePath'
       ? 'Trimming and Transcoding'
       : 'Downloading YouTube Audio';
+
+    log.info('Starting audio processing step', { step: trimMessage });
+
     await docRef.update({
       status: {
         ...sermonStatus,
@@ -92,12 +141,15 @@ export const processAudio = async (
         message: trimMessage,
       },
     });
+
+    const trimCtx = createChildContext(ctx || createContext(fileName), 'trim');
+
     if (skipTranscode) {
       if (audioSource.type !== 'StorageFilePath') {
+        log.error('Invalid audio source for skipTranscode', { sourceType: audioSource.type });
         throw new Error('Audio source must be a file from processed-sermons in order to trim without transcoding');
       }
       await trim(
-        ffmpeg,
         cancelToken,
         bucket,
         audioSource.source,
@@ -106,11 +158,11 @@ export const processAudio = async (
         realtimeDB.ref(`addIntroOutro/${fileName}`),
         customMetadata,
         startTime,
-        duration
+        duration,
+        trimCtx
       );
     } else {
       await trimAndTranscode(
-        ffmpeg,
         ytdlpPath,
         cancelToken,
         bucket,
@@ -123,18 +175,21 @@ export const processAudio = async (
         sermonStatus,
         customMetadata,
         startTime,
-        duration
+        duration,
+        trimCtx
       );
     }
 
+    log.info('Audio processing step completed', { step: trimMessage });
+
     // download processed audio for merging
     const processedFilePath = createTempFile(`processed-${fileName}`, tempFiles);
-    logger.info('Downloading processed audio to', processedFilePath);
+    log.debug('Downloading processed audio and intro/outro files');
     const [tempFilePaths] = await Promise.all([
-      await downloadFiles(bucket, audioFilesToMerge, tempFiles),
-      await bucket.file(processedStoragePath).download({ destination: processedFilePath }),
+      downloadFiles(bucket, audioFilesToMerge, tempFiles),
+      bucket.file(processedStoragePath).download({ destination: processedFilePath }),
     ]);
-    logger.info('Successfully downloaded processed audio');
+
     //create merge array in order INTRO, CONTENT, OUTRO
     const filePathsArray: string[] = [];
     if (tempFilePaths.INTRO) filePathsArray.push(tempFilePaths.INTRO);
@@ -149,10 +204,11 @@ export const processAudio = async (
     ).reduce((accumulator, currentValue) => accumulator + currentValue, duration);
 
     customMetadata.duration = durationSeconds;
-    logger.info('Total Duration', secondsToTimeFormat(durationSeconds));
+    log.info('Calculated total duration', { durationSeconds, formatted: secondsToTimeFormat(durationSeconds) });
 
     // if there is an intro or outro, merge the files
     if (filePathsArray.length > 1) {
+      log.info('Merging files with intro/outro', { fileCount: filePathsArray.length });
       await docRef.update({
         status: {
           ...sermonStatus,
@@ -160,12 +216,10 @@ export const processAudio = async (
           message: 'Adding Intro and Outro',
         },
       });
-      const outputFileName = `intro_outro-${fileName}`;
       const outputFilePath = `intro-outro-sermons/${path.basename(fileName)}`;
-      //merge files
-      logger.info('Merging files', { filePathsArray: filePathsArray, destination: outputFileName });
+
+      const mergeCtx = createChildContext(ctx || createContext(fileName), 'merge');
       const mergedOutputFile = await mergeFiles(
-        ffmpeg,
         cancelToken,
         bucket,
         filePathsArray,
@@ -173,15 +227,18 @@ export const processAudio = async (
         durationSeconds,
         tempFiles,
         realtimeDB.ref(`addIntroOutro/${fileName}`),
-        customMetadata
+        customMetadata,
+        mergeCtx
       );
-      logger.info('MergedFiles saved to', mergedOutputFile.name);
-      await logMemoryUsage('Memory Usage after merge');
+      log.info('Files merged successfully', { outputPath: mergedOutputFile.name });
+      await logMemoryUsage('Memory Usage after merge', ctx);
     } else {
-      logger.info('No intro or outro, skipping merge');
+      log.debug('No intro or outro, skipping merge');
     }
+
     if (cancelToken.isCancellationRequested) return;
-    logger.info('Updating status to PROCESSED');
+
+    log.info('Updating status to PROCESSED');
     await docRef.update({
       status: {
         ...sermonStatus,
@@ -198,27 +255,33 @@ export const processAudio = async (
     if (audioSource.type === 'StorageFilePath') {
       const [originalFileExists] = await bucket.file(audioSource.source).exists();
       if (originalFileExists && deleteOriginal) {
-        logger.info('Deleting original audio file', audioSource.source);
+        log.info('Deleting original audio file', { source: audioSource.source });
         await bucket.file(audioSource.source).delete();
-        logger.info('Original audio file deleted');
       }
     }
 
-    logger.info('Files have been merged succesfully');
+    log.info('Audio processing completed successfully');
   } catch (error) {
+    log.error('Audio processing failed', {
+      error: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
     throw error;
   } finally {
     await realtimeDB.ref(`addIntroOutro/${fileName}`).remove();
     const promises: Promise<void>[] = [];
     tempFiles.forEach((file) => {
-      logger.info('Deleting temp file', file);
-      promises.push(unlink(file));
+      promises.push(
+        unlink(file).catch((err) => {
+          log.warn('Failed to delete temp file', { file, error: err });
+        })
+      );
     });
     try {
       await Promise.all(promises);
-      logger.info('All temp files deleted');
+      log.debug('Cleanup completed', { tempFilesDeleted: tempFiles.size });
     } catch (err) {
-      logger.error('Error when deleting temporary files', err);
+      log.error('Error during cleanup', { error: err });
     }
   }
 };

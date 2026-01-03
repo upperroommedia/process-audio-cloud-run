@@ -2,13 +2,33 @@ import { CancelToken } from './CancelToken';
 import path from 'path';
 import { Bucket, File } from '@google-cloud/storage';
 import { Reference } from 'firebase-admin/database';
-import { convertStringToMilliseconds, createTempFile, logMemoryUsage } from './utils';
+import { convertStringToMilliseconds, createTempFile, logMemoryUsage, getFFmpegPath } from './utils';
 import { CustomMetadata } from './types';
 import { unlink } from 'fs/promises';
-import logger from './WinstonLogger';
+import { spawn } from 'child_process';
+import { createLoggerWithContext } from './WinstonLogger';
+import { LogContext } from './context';
 
-const trimAndTranscode = async (
-  ffmpeg: typeof import('fluent-ffmpeg'),
+// Parse ffmpeg stderr for progress and duration
+function parseFFmpegProgress(stderrLine: string): { time?: string; duration?: string } {
+  const result: { time?: string; duration?: string } = {};
+  
+  // Parse time: time=00:01:23.45
+  const timeMatch = stderrLine.match(/time=(\d{2}:\d{2}:\d{2}\.\d{2})/);
+  if (timeMatch) {
+    result.time = timeMatch[1];
+  }
+  
+  // Parse duration: Duration: 00:05:30.12
+  const durationMatch = stderrLine.match(/Duration:\s*(\d{2}:\d{2}:\d{2}\.\d{2})/);
+  if (durationMatch) {
+    result.duration = durationMatch[1];
+  }
+  
+  return result;
+}
+
+const trim = async (
   cancelToken: CancelToken,
   bucket: Bucket,
   storageFilePath: string,
@@ -17,14 +37,17 @@ const trimAndTranscode = async (
   realtimeDBRef: Reference,
   customMetadata: CustomMetadata,
   startTime?: number,
-  duration?: number
+  duration?: number,
+  ctx?: LogContext
 ): Promise<File> => {
+  const log = createLoggerWithContext(ctx);
+  
+  log.info('Starting trim operation', { storageFilePath, startTime, duration, outputPath: outputFilePath });
+  
   // Download the raw audio source from storage
-  logger.info('Trimming but not transcoding audio source:', storageFilePath);
   const rawSourceFile = createTempFile(`raw-${path.basename(storageFilePath)}`, tempFiles);
-  logger.info('Downloading raw audio source to', rawSourceFile);
+  log.debug('Downloading raw audio source', { source: storageFilePath, destination: rawSourceFile });
   await bucket.file(storageFilePath).download({ destination: rawSourceFile });
-  logger.info('Successfully downloaded raw audio source');
 
   const outputFile = bucket.file(outputFilePath);
   const contentDisposition = customMetadata.title
@@ -34,63 +57,108 @@ const trimAndTranscode = async (
     contentType: 'audio/mpeg',
     metadata: { contentDisposition, metadata: customMetadata },
   });
-  const proc = ffmpeg().input(rawSourceFile).format('mp3');
-  if (startTime) proc.setStartTime(startTime);
-  if (duration) proc.setDuration(duration);
-  proc.outputOption('-c copy');
-  let totalTimeMillis: number;
+  
+  // Build ffmpeg command
+  const ffmpegPath = getFFmpegPath();
+  const args: string[] = [];
+  
+  // Input seeking for files (before -i)
+  if (startTime) {
+    args.push('-ss', startTime.toString());
+  }
+  
+  args.push('-i', rawSourceFile);
+  
+  // Duration
+  if (duration) {
+    args.push('-t', duration.toString());
+  }
+  
+  // Copy codec (no transcoding)
+  args.push('-c', 'copy', '-f', 'mp3', 'pipe:1');
+  
+  const commandLine = `${ffmpegPath} ${args.join(' ')}`;
+  log.info('FFmpeg command', { command: commandLine });
+  
+  const proc = spawn(ffmpegPath, args, {
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  
+  if (!proc.stdout) {
+    throw new Error('FFmpeg stdout is null');
+  }
+  proc.stdout.pipe(writeStream);
+  
+  let totalTimeMillis: number | undefined;
   let previousPercent = -1;
+  
   const promiseResult = await new Promise<File>((resolve, reject) => {
-    proc
-      .on('start', function (commandLine) {
-        logger.info('Trim Spawned Ffmpeg with command: ' + commandLine);
-      })
-      .on('end', async () => {
-        logger.info('Finished Trim');
+    proc.on('error', (err) => {
+      log.error('FFmpeg spawn error', { error: err });
+      reject(err);
+    });
+    
+    proc.on('close', (code, signal) => {
+      if (code === 0) {
+        log.info('Trim completed successfully');
         resolve(outputFile);
-      })
-      .on('error', (err, stdout, stderr) => {
-        logger.error('Trim Error:', err);
-        logger.error('ffmpeg stdout:', stdout);
-        logger.error('ffmpeg stderr:', stderr);
-        reject(err);
-      })
-      .on('codecData', (data) => {
-        // HERE YOU GET THE TOTAL TIME
-        logger.info('Total duration: ' + data.duration);
-        totalTimeMillis = convertStringToMilliseconds(data.duration);
-      })
-      .on('progress', async (progress) => {
+      } else {
+        log.error('FFmpeg process failed', { exitCode: code, signal });
+        reject(new Error(`FFmpeg process exited with code ${code}`));
+      }
+    });
+    
+    if (!proc.stderr) {
+      reject(new Error('FFmpeg stderr is null'));
+      return;
+    }
+    
+    proc.stderr.on('data', (data: Buffer) => {
+      const stderrLine = data.toString();
+      
+      // Parse progress and duration
+      const progress = parseFFmpegProgress(stderrLine);
+      
+      if (progress.duration && !totalTimeMillis) {
+        totalTimeMillis = convertStringToMilliseconds(progress.duration);
+        log.info('Detected input duration', { duration: progress.duration, milliseconds: totalTimeMillis });
+      }
+      
+      if (progress.time) {
         if (cancelToken.isCancellationRequested) {
-          logger.info('Cancellation requested, killing ffmpeg process');
-          proc.kill('SIGTERM'); // this sends a termination signal to the process
+          log.warn('Cancellation requested, terminating process');
+          proc.kill('SIGTERM');
           reject(new Error('Trim operation was cancelled'));
+          return;
         }
-        const timeMillis = convertStringToMilliseconds(progress.timemark);
-        const calculatedDuration = duration
-          ? duration * 1000
-          : startTime
-          ? totalTimeMillis - startTime * 1000
-          : totalTimeMillis;
-        const percent = Math.round(Math.max(0, ((timeMillis * 0.95) / calculatedDuration) * 100)); // go to 95% to leave room for the time it takes to Merge the files
-        if (percent !== previousPercent) {
-          previousPercent = percent;
-          logger.info('Trim Progress:', percent);
-          realtimeDBRef.set(percent);
+        
+        if (totalTimeMillis) {
+          const timeMillis = convertStringToMilliseconds(progress.time);
+          const calculatedDuration = duration
+            ? duration * 1000
+            : startTime
+            ? totalTimeMillis - startTime * 1000
+            : totalTimeMillis;
+          const percent = Math.round(Math.max(0, ((timeMillis * 0.95) / calculatedDuration) * 100));
+          if (percent !== previousPercent && percent % 5 === 0) {
+            // Only log every 5% to reduce noise
+            previousPercent = percent;
+            log.debug('Processing progress', { percent });
+            realtimeDBRef.set(percent);
+          }
         }
-      })
-      .pipe(writeStream);
+      }
+    });
   });
 
   // Delete raw audio from temp memory
-  await logMemoryUsage('Before raw audio delete memory');
-  logger.info('Deleting raw audio temp file:', rawSourceFile);
+  await logMemoryUsage('Before raw audio delete', ctx);
+  log.debug('Deleting raw audio temp file', { file: rawSourceFile });
   await unlink(rawSourceFile);
   tempFiles.delete(rawSourceFile);
-  logger.info('Successfully deleted raw audio temp file:', rawSourceFile);
-  await logMemoryUsage('After raw audio delete memory');
+  await logMemoryUsage('After raw audio delete', ctx);
 
   return promiseResult;
 };
 
-export default trimAndTranscode;
+export default trim;
