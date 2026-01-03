@@ -40,6 +40,8 @@ steps:
         '--cpu-boost',
         '--concurrency',
         '1',
+        '--max-instances',
+        '10',
       ]
 
 images:
