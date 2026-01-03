@@ -76,8 +76,11 @@ const trimAndTranscode = async (
 
   const updateDownloadProgress = (progress: number) => {
     if (!transcodingStarted) {
-      log.debug('YouTube download progress', { progress });
-      realtimeDBRef.set(progress);
+      // Scale yt-dlp progress (0-100%) to 0-95% range to match original behavior
+      // This ensures: download 0-95%, trim/transcode 0-95%, merge 95-100%
+      const scaledProgress = Math.round(progress * 0.95);
+      log.debug('YouTube download progress', { progress, scaledProgress });
+      realtimeDBRef.set(scaledProgress);
     }
   };
 
@@ -118,12 +121,17 @@ const trimAndTranscode = async (
       args.push('-i', inputSource);
     } else {
       // Stream/pipe input - must use stdin
+      // For pipe inputs, use -ss before -i (input seeking)
+      // This works better than output seeking because it skips at the demuxer level
+      // Even though pipes aren't seekable, ffmpeg can read and discard data until startTime
+      if (startTime) {
+        args.push('-ss', startTime.toString());
+        log.info('Using input seeking for pipe input', {
+          startTime,
+          note: 'ffmpeg will skip reading until startTime at demuxer level',
+        });
+      }
       args.push('-i', 'pipe:0');
-    }
-
-    // Output seeking for streams (after -i)
-    if (startTime && typeof inputSource !== 'string') {
-      args.push('-ss', startTime.toString());
     }
 
     // Duration
@@ -151,7 +159,13 @@ const trimAndTranscode = async (
     args.push('pipe:1');
 
     const commandLine = `${ffmpegPath} ${args.join(' ')}`;
-    log.info('FFmpeg command', { command: commandLine });
+    log.info('FFmpeg command', {
+      command: commandLine,
+      startTime,
+      duration,
+      inputType: typeof inputSource === 'string' ? 'file' : 'pipe',
+      args: args.join(' '),
+    });
 
     proc = spawn(ffmpegPath, args, {
       stdio: typeof inputSource === 'string' ? ['ignore', 'pipe', 'pipe'] : ['pipe', 'pipe', 'pipe'],
