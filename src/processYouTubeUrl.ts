@@ -264,13 +264,13 @@ export const downloadYouTubeSection = async (
   const log = createLoggerWithContext(ctx);
   const isDevelopment = process.env.NODE_ENV === 'development';
 
-  log.info('Downloading YouTube section (no transcoding)', {
+  log.info('Downloading YouTube section with precise cuts', {
     url,
     outputFilePath,
     startTime,
     duration,
     isDevelopment,
-    note: 'yt-dlp will download only the section using stream copy, our ffmpeg will transcode and filter',
+    note: 'Using --force-keyframes-at-cuts for EXACT timing - yt-dlp re-encodes at cut points',
   });
 
   if (cancelToken.isCancellationRequested) {
@@ -281,15 +281,17 @@ export const downloadYouTubeSection = async (
   const endTimeStr = duration !== undefined ? formatTimeForDownloadSections(startTime + duration) : 'inf';
   const sectionRange = `*${startTimeStr}-${endTimeStr}`;
 
-  // Build yt-dlp command to:
-  // 1. Download only the needed section (--download-sections) - uses ffmpeg with -c copy (stream copy, no transcoding)
-  // 2. Output to file (-o) - let yt-dlp add the extension based on format
-  // 3. NO -x --extract-audio - we'll let our ffmpeg handle transcoding and filtering
+  // Build yt-dlp command to download PRECISELY the requested section:
+  // 1. --download-sections: Download only the specified time range
+  // 2. --force-keyframes-at-cuts: CRITICAL - Re-encode at cut points for EXACT timing
+  //    Without this, yt-dlp uses stream copy (-c copy) which cuts at keyframe boundaries,
+  //    resulting in imprecise cuts (extra content before/after requested range).
+  //    With this, yt-dlp re-encodes at the cut points, giving us frame-accurate cuts.
+  // 3. -o: Output to file - yt-dlp adds extension based on format
   // This approach:
   // - Downloads only the section we need (efficient bandwidth)
-  // - Uses stream copy (no transcoding in yt-dlp, efficient CPU)
-  // - Avoids ffmpeg exit code 251 issues
-  // - Lets our ffmpeg do all processing in one pass (consistent quality)
+  // - Gets EXACT cuts at requested start/end times (no extra content)
+  // - yt-dlp handles re-encoding for precise cuts; our ffmpeg applies filters
   const args = [
     '-f',
     'bestaudio/best', // Get best audio format
@@ -298,11 +300,12 @@ export const downloadYouTubeSection = async (
     '--no-playlist',
     '--download-sections',
     sectionRange,
+    '--force-keyframes-at-cuts', // CRITICAL: Re-encode for precise cuts (not stream copy)
     '-o',
     `${outputFilePath}.%(ext)s`, // Let yt-dlp add extension based on format (webm, m4a, etc.)
   ];
 
-  // yt-dlp needs ffmpeg for --download-sections (uses ffmpeg with -c copy for stream copy)
+  // yt-dlp needs ffmpeg for --download-sections and --force-keyframes-at-cuts
   const ffmpegPath = getFFmpegPath();
   const ffmpegDir = path.dirname(ffmpegPath);
   args.push('--ffmpeg-location', ffmpegDir);
@@ -348,11 +351,11 @@ export const downloadYouTubeSection = async (
   args.push(url);
 
   const command = `${ytdlpPath} ${args.join(' ')}`;
-  log.info('Executing yt-dlp section download (stream copy, no transcoding)', {
+  log.info('Executing yt-dlp section download with precise cuts', {
     command,
     sectionRange,
     outputFilePath,
-    note: 'Our ffmpeg will handle transcoding and filtering in one pass',
+    note: 'Using --force-keyframes-at-cuts for frame-accurate cuts at exact start/end times',
   });
 
   return new Promise<string>((resolve, reject) => {
@@ -386,10 +389,12 @@ export const downloadYouTubeSection = async (
 
         if (actualFile) {
           const actualPath = path.join(dir, actualFile);
-          log.info('yt-dlp section download completed successfully', {
+          log.info('yt-dlp section download completed with precise cuts', {
             outputFilePath: actualPath,
             format: path.extname(actualFile),
-            note: 'File is in original format (stream copy), our ffmpeg will transcode and filter',
+            requestedStart: startTime,
+            requestedDuration: duration,
+            note: 'File contains EXACT time range - no additional seeking needed',
           });
           resolve(actualPath);
         } else {

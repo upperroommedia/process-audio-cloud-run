@@ -7,6 +7,7 @@ import {
   logMemoryUsage,
   throwErrorOnSpecificStderr,
   getFFmpegPath,
+  getDurationSeconds,
 } from './utils';
 import { CustomMetadata, AudioSource } from './types';
 import { processYouTubeUrl, downloadYouTubeSection } from './processYouTubeUrl';
@@ -67,6 +68,12 @@ const trimAndTranscode = async (
   let proc: ReturnType<typeof spawn> | undefined;
   let transcodingStarted = false;
   let usedYtdlpSectionDownload = false;
+
+  // Duration verification state - used to determine if secondary trim is needed
+  // Secondary trim uses the KNOWN user-specified duration, NOT arbitrary values
+  let secondaryTrimNeeded = false;
+  let secondaryTrimDuration: number | undefined;
+  const DURATION_TOLERANCE_SECONDS = 2; // Allow 2 seconds tolerance for encoding variance
 
   log.info('Starting trim and transcode', {
     sourceType: audioSource.type,
@@ -165,17 +172,17 @@ const trimAndTranscode = async (
     if (audioSource.type === 'YouTubeUrl') {
       log.info('Processing YouTube URL', { url: audioSource.source });
 
-      // If we have startTime, use yt-dlp to download only the section (no transcoding)
-      // This avoids pipe seeking issues by using HTTP input seeking
-      // Our ffmpeg will handle transcoding and filtering in one pass
+      // If we have startTime, use yt-dlp to download the EXACT section with --force-keyframes-at-cuts
+      // This re-encodes at cut points for frame-accurate timing (no extra content before/after)
+      // Our ffmpeg will then apply audio filters and convert to MP3
       if (startTime !== undefined && startTime !== null) {
         // Use generic extension - yt-dlp will add the actual extension based on format
         const ytdlpOutputFile = createTempFile(`ytdlp-${audioSource.id}`, tempFiles);
-        log.info('Using yt-dlp to download section only (stream copy, no transcoding)', {
+        log.info('Using yt-dlp to download EXACT section with precise cuts', {
           startTime,
           duration,
           outputFile: ytdlpOutputFile,
-          note: 'Our ffmpeg will handle transcoding and filtering in one pass',
+          note: 'Using --force-keyframes-at-cuts for frame-accurate timing',
         });
 
         // Download the section - no fallback, fail fast if this doesn't work
@@ -200,6 +207,51 @@ const trimAndTranscode = async (
           log.debug('Updated tempFiles tracking for yt-dlp output', {
             basePath: ytdlpOutputFile,
             actualPath: downloadedFile,
+          });
+        }
+
+        // With --force-keyframes-at-cuts, yt-dlp re-encodes at cut points instead of using
+        // stream copy. This gives us EXACT cuts at the requested start/end times.
+        // No timestamp probing or offset calculation needed - the file contains precisely
+        // the requested time range.
+
+        // DURATION VERIFICATION: Verify the downloaded file has the expected duration
+        // If it exceeds the expected duration, we'll apply a secondary trim using the
+        // KNOWN user-specified duration - never an arbitrary value
+        const actualDuration = await getDurationSeconds(downloadedFile);
+        const expectedDuration = duration ?? Infinity; // Use user-specified duration
+        const durationDifference = actualDuration - expectedDuration;
+        const withinTolerance = duration === undefined || Math.abs(durationDifference) <= DURATION_TOLERANCE_SECONDS;
+
+        log.info('Downloaded file duration verification', {
+          actualDuration: actualDuration.toFixed(2),
+          expectedDuration: duration !== undefined ? duration.toFixed(2) : 'not specified',
+          durationDifference: durationDifference.toFixed(2),
+          tolerance: DURATION_TOLERANCE_SECONDS,
+          withinTolerance,
+          requestedStart: startTime,
+          requestedDuration: duration,
+        });
+
+        // Determine if secondary trim is needed based on KNOWN timestamps
+        // Only trim if: duration was specified AND actual exceeds expected beyond tolerance
+        if (duration !== undefined && actualDuration > expectedDuration + DURATION_TOLERANCE_SECONDS) {
+          secondaryTrimNeeded = true;
+          secondaryTrimDuration = duration; // Use the KNOWN user-specified duration
+          log.warn('Downloaded file exceeds expected duration - will apply secondary trim', {
+            actualDuration: actualDuration.toFixed(2),
+            expectedDuration: duration.toFixed(2),
+            excessSeconds: (actualDuration - duration).toFixed(2),
+            action: `Will trim to exact ${duration} seconds as specified by user`,
+            note: 'Secondary trim uses KNOWN duration value, not arbitrary trimming',
+          });
+        } else {
+          log.info('yt-dlp section download ready for processing', {
+            downloadedFile,
+            requestedStart: startTime,
+            requestedDuration: duration,
+            actualDuration: actualDuration.toFixed(2),
+            note: 'File duration within tolerance - no secondary trim needed',
           });
         }
 
@@ -235,24 +287,23 @@ const trimAndTranscode = async (
     const args: string[] = [];
 
     // Input options
-    // When using yt-dlp downloadYouTubeSection, the file is already trimmed (section downloaded)
-    // But it's NOT transcoded - it's in the original format (webm, m4a, etc.)
-    // So we skip -ss and -t (already trimmed), but still transcode and apply filters
+    // When using yt-dlp downloadYouTubeSection with --force-keyframes-at-cuts, the file contains
+    // the EXACT requested time range - no seeking needed. For other sources, we may need -ss/-t.
     const usingYtdlpSectionDownload =
       audioSource.type === 'YouTubeUrl' && startTime !== undefined && startTime !== null && usedYtdlpSectionDownload;
 
     if (typeof inputSource === 'string') {
       // File input
-      // If using yt-dlp section download, file is already trimmed - skip seeking
-      if (startTime && !usingYtdlpSectionDownload) {
-        // For files, we can use input seeking (before -i) for efficiency
+      if (!usingYtdlpSectionDownload && startTime) {
+        // For regular files (not yt-dlp precise section), use input seeking for efficiency
         args.push('-ss', startTime.toString());
       }
+      // For yt-dlp section: no seeking needed - file has exact cuts from --force-keyframes-at-cuts
       args.push('-i', inputSource);
     } else {
       // Stream/pipe input - must use stdin
       args.push('-i', 'pipe:0');
-      // Only add -ss if NOT using yt-dlp section download (yt-dlp already handled seeking)
+      // Only add -ss if NOT using yt-dlp section download (yt-dlp already handled cutting)
       if (startTime && !usingYtdlpSectionDownload) {
         // Use -ss after -i for pipe inputs (output seeking)
         args.push('-ss', startTime.toString());
@@ -260,19 +311,24 @@ const trimAndTranscode = async (
           startTime,
           note: 'Output seeking required for pipes - ffmpeg will decode then discard frames until startTime',
         });
-      } else if (usingYtdlpSectionDownload) {
-        log.info('Skipping -ss in ffmpeg - yt-dlp already downloaded the section', {
-          startTime,
-          duration,
-          note: 'File is already trimmed, our ffmpeg will transcode and apply filters',
-        });
       }
     }
 
-    // Duration - always add to ensure exact output length
-    // yt-dlp's stream copy may produce slightly longer files due to packet boundaries
-    if (duration) {
+    // Duration handling:
+    // 1. For non-yt-dlp sources: always use -t with user-specified duration
+    // 2. For yt-dlp section download: only add -t if secondary trim is needed
+    //    Secondary trim uses the KNOWN user-specified duration (not arbitrary values)
+    if (duration && !usingYtdlpSectionDownload) {
       args.push('-t', duration.toString());
+    } else if (usingYtdlpSectionDownload && secondaryTrimNeeded && secondaryTrimDuration !== undefined) {
+      // Apply secondary trim using the KNOWN user-specified duration
+      // This is only triggered when ffprobe verified the file exceeds expected duration
+      args.push('-t', secondaryTrimDuration.toString());
+      log.info('Applying secondary trim with user-specified duration', {
+        duration: secondaryTrimDuration,
+        reason: 'Downloaded file exceeded expected duration beyond tolerance',
+        note: 'Using KNOWN duration value from user input - not arbitrary trimming',
+      });
     }
 
     // Audio codec and filters - ALWAYS applied to ensure consistent audio processing
@@ -282,9 +338,13 @@ const trimAndTranscode = async (
     args.push('-acodec', 'libmp3lame', '-b:a', '128k', '-ac', '2', '-ar', '44100', '-af', audioFilters, '-f', 'mp3');
 
     if (usingYtdlpSectionDownload) {
-      log.info('Transcoding and applying audio filters to yt-dlp downloaded section', {
+      log.info('Transcoding yt-dlp section and applying audio filters', {
         filters: audioFilters,
-        note: 'File is in original format, our ffmpeg will transcode to MP3 and apply all filters in one pass',
+        secondaryTrimApplied: secondaryTrimNeeded,
+        secondaryTrimDuration: secondaryTrimNeeded ? secondaryTrimDuration : undefined,
+        note: secondaryTrimNeeded
+          ? `Applying secondary trim to ${secondaryTrimDuration}s using KNOWN user-specified duration`
+          : 'File has exact cuts from --force-keyframes-at-cuts, no secondary trim needed',
       });
     }
 
@@ -294,10 +354,20 @@ const trimAndTranscode = async (
     const commandLine = `${ffmpegPath} ${args.join(' ')}`;
     log.info('FFmpeg command', {
       command: commandLine,
-      startTime,
-      duration,
       inputType: typeof inputSource === 'string' ? 'file' : 'pipe',
       args: args.join(' '),
+      trimParameters: {
+        startTime,
+        requestedDuration: duration,
+        usingYtdlpSectionDownload,
+        secondaryTrimNeeded,
+        secondaryTrimDuration: secondaryTrimNeeded ? secondaryTrimDuration : undefined,
+        effectiveDuration: secondaryTrimNeeded
+          ? secondaryTrimDuration
+          : usingYtdlpSectionDownload
+          ? 'handled by yt-dlp'
+          : duration,
+      },
     });
 
     proc = spawn(ffmpegPath, args, {
@@ -382,7 +452,20 @@ const trimAndTranscode = async (
 
       ffmpegProc.on('close', (code, signal) => {
         if (code === 0) {
-          log.info('Trim and transcode completed successfully');
+          log.info('Trim and transcode completed successfully', {
+            outputPath: outputFilePath,
+            sourceType: audioSource.type,
+            usedYtdlpSectionDownload,
+            secondaryTrimApplied: secondaryTrimNeeded,
+            trimDecision: {
+              startTime,
+              requestedDuration: duration,
+              secondaryTrimDuration: secondaryTrimNeeded ? secondaryTrimDuration : undefined,
+              note: secondaryTrimNeeded
+                ? 'Applied secondary trim using KNOWN user-specified duration'
+                : 'No secondary trim needed',
+            },
+          });
           if (ytdlp) {
             log.debug('Terminating yt-dlp process');
             ytdlp.kill('SIGTERM');
