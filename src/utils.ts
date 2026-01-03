@@ -1,10 +1,8 @@
 import os from 'os';
 import path from 'path';
-import ffmpegStatic from 'ffmpeg-static';
 import { exec, spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync } from 'fs';
 import { readdir, stat } from 'fs/promises';
-import { path as ffprobeStatic } from 'ffprobe-static';
 import { ProcessAudioInputType, AudioSource, CustomMetadata, FilePaths } from './types';
 import { Bucket } from '@google-cloud/storage';
 import axios from 'axios';
@@ -90,20 +88,39 @@ function logFFMPEGVersion(ffmpegStaticPath: string) {
 }
 
 export function getFFmpegPath(): string {
-  if (!ffmpegStatic) {
-    throw new Error('ffmpeg-static not found');
+  // Check common ffmpeg locations in priority order
+  const ffmpegPaths = [
+    '/usr/bin/ffmpeg', // Linux/Docker (apt install)
+    '/opt/homebrew/bin/ffmpeg', // macOS ARM (Homebrew)
+    '/usr/local/bin/ffmpeg', // macOS Intel (Homebrew) or manual install
+  ];
+
+  for (const ffmpegPath of ffmpegPaths) {
+    if (existsSync(ffmpegPath)) {
+      logFFMPEGVersion(ffmpegPath);
+      logger.info('Using ffmpeg', { path: ffmpegPath });
+      return ffmpegPath;
+    }
   }
-  logFFMPEGVersion(ffmpegStatic);
-  logger.info('ffmpeg-static found', ffmpegStatic);
-  logger.info('ffprobe-static found', ffprobeStatic);
-  return ffmpegStatic;
+
+  throw new Error(`ffmpeg not found. Checked: ${ffmpegPaths.join(', ')}. Install via apt (Docker) or brew (macOS)`);
 }
 
 export function getFFprobePath(): string {
-  if (!ffprobeStatic) {
-    throw new Error('ffprobe-static not found');
+  // Check common ffprobe locations in priority order
+  const ffprobePaths = [
+    '/usr/bin/ffprobe', // Linux/Docker (apt install)
+    '/opt/homebrew/bin/ffprobe', // macOS ARM (Homebrew)
+    '/usr/local/bin/ffprobe', // macOS Intel (Homebrew) or manual install
+  ];
+
+  for (const ffprobePath of ffprobePaths) {
+    if (existsSync(ffprobePath)) {
+      return ffprobePath;
+    }
   }
-  return ffprobeStatic;
+
+  throw new Error(`ffprobe not found. Checked: ${ffprobePaths.join(', ')}. Install via apt (Docker) or brew (macOS)`);
 }
 
 export const uploadSermon = async (

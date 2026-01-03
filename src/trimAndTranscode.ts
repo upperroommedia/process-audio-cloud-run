@@ -9,7 +9,7 @@ import {
   getFFmpegPath,
 } from './utils';
 import { CustomMetadata, AudioSource } from './types';
-import { processYouTubeUrl } from './processYouTubeUrl';
+import { processYouTubeUrl, downloadYouTubeSection } from './processYouTubeUrl';
 import { unlink } from 'fs/promises';
 import { PassThrough, Readable } from 'stream';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
@@ -66,6 +66,7 @@ const trimAndTranscode = async (
   let ytdlp: ChildProcessWithoutNullStreams | undefined;
   let proc: ReturnType<typeof spawn> | undefined;
   let transcodingStarted = false;
+  let usedYtdlpSectionDownload = false;
 
   log.info('Starting trim and transcode', {
     sourceType: audioSource.type,
@@ -134,18 +135,27 @@ const trimAndTranscode = async (
   });
 
   let maxDownloadProgress = -1;
+  let lastLoggedProgress = -1; // Track last logged progress for console output
   const updateDownloadProgress = (progress: number) => {
     if (!transcodingStarted) {
       // Scale yt-dlp progress (0-100%) to 0-downloadEndPercent range
       const scaledProgress = Math.round(progress * (progressRanges.downloadEndPercent / 100));
-      // Only update if progress has increased (prevent backwards jumps)
-      if (scaledProgress > maxDownloadProgress) {
-        maxDownloadProgress = scaledProgress;
-        log.debug('YouTube download progress', {
-          progress,
+
+      // Log progress to console more frequently (every 10% of raw progress)
+      const progressDecile = Math.floor(progress / 10);
+      if (progressDecile > lastLoggedProgress) {
+        lastLoggedProgress = progressDecile;
+        log.info('Download progress', {
+          rawProgress: Math.round(progress),
           scaledProgress,
           downloadEndPercent: progressRanges.downloadEndPercent,
+          phase: 'download',
         });
+      }
+
+      // Only update database if progress has increased (prevent backwards jumps)
+      if (scaledProgress > maxDownloadProgress) {
+        maxDownloadProgress = scaledProgress;
         realtimeDBRef.set(scaledProgress);
       }
     }
@@ -154,18 +164,64 @@ const trimAndTranscode = async (
   try {
     if (audioSource.type === 'YouTubeUrl') {
       log.info('Processing YouTube URL', { url: audioSource.source });
-      // Process the audio source from YouTube
-      const passThrough = new PassThrough();
-      ytdlp = await processYouTubeUrl(
-        ytdlpPath,
-        audioSource.source,
-        cancelToken,
-        passThrough,
-        updateDownloadProgress,
-        realtimeDB,
-        ctx
-      );
-      inputSource = passThrough;
+
+      // If we have startTime, use yt-dlp to download only the section (no transcoding)
+      // This avoids pipe seeking issues by using HTTP input seeking
+      // Our ffmpeg will handle transcoding and filtering in one pass
+      if (startTime !== undefined && startTime !== null) {
+        // Use generic extension - yt-dlp will add the actual extension based on format
+        const ytdlpOutputFile = createTempFile(`ytdlp-${audioSource.id}`, tempFiles);
+        log.info('Using yt-dlp to download section only (stream copy, no transcoding)', {
+          startTime,
+          duration,
+          outputFile: ytdlpOutputFile,
+          note: 'Our ffmpeg will handle transcoding and filtering in one pass',
+        });
+
+        // Download the section - no fallback, fail fast if this doesn't work
+        const downloadedFile = await downloadYouTubeSection(
+          ytdlpPath,
+          audioSource.source,
+          ytdlpOutputFile,
+          cancelToken,
+          updateDownloadProgress,
+          realtimeDB,
+          startTime,
+          duration ?? undefined,
+          ctx
+        );
+
+        // yt-dlp adds extension to output file (e.g., .webm, .m4a), so the actual file
+        // path differs from the base path we registered. Update tempFiles to track the
+        // actual file path for proper cleanup.
+        if (downloadedFile !== ytdlpOutputFile) {
+          tempFiles.delete(ytdlpOutputFile);
+          tempFiles.add(downloadedFile);
+          log.debug('Updated tempFiles tracking for yt-dlp output', {
+            basePath: ytdlpOutputFile,
+            actualPath: downloadedFile,
+          });
+        }
+
+        usedYtdlpSectionDownload = true;
+        // Use the downloaded file as input - our ffmpeg will transcode and apply filters
+        inputSource = downloadedFile;
+      } else {
+        // No startTime - use the old streaming approach
+        const passThrough = new PassThrough();
+        ytdlp = await processYouTubeUrl(
+          ytdlpPath,
+          audioSource.source,
+          cancelToken,
+          passThrough,
+          updateDownloadProgress,
+          realtimeDB,
+          undefined,
+          undefined,
+          ctx
+        );
+        inputSource = passThrough;
+      }
     } else {
       // Process the audio source from storage
       const rawSourceFile = createTempFile(`raw-${audioSource.id}`, tempFiles);
@@ -179,48 +235,58 @@ const trimAndTranscode = async (
     const args: string[] = [];
 
     // Input options
+    // When using yt-dlp downloadYouTubeSection, the file is already trimmed (section downloaded)
+    // But it's NOT transcoded - it's in the original format (webm, m4a, etc.)
+    // So we skip -ss and -t (already trimmed), but still transcode and apply filters
+    const usingYtdlpSectionDownload =
+      audioSource.type === 'YouTubeUrl' && startTime !== undefined && startTime !== null && usedYtdlpSectionDownload;
+
     if (typeof inputSource === 'string') {
       // File input
-      if (startTime) {
+      // If using yt-dlp section download, file is already trimmed - skip seeking
+      if (startTime && !usingYtdlpSectionDownload) {
         // For files, we can use input seeking (before -i) for efficiency
         args.push('-ss', startTime.toString());
       }
       args.push('-i', inputSource);
     } else {
       // Stream/pipe input - must use stdin
-      // For pipe inputs, use -ss before -i (input seeking)
-      // This works better than output seeking because it skips at the demuxer level
-      // Even though pipes aren't seekable, ffmpeg can read and discard data until startTime
-      if (startTime) {
+      args.push('-i', 'pipe:0');
+      // Only add -ss if NOT using yt-dlp section download (yt-dlp already handled seeking)
+      if (startTime && !usingYtdlpSectionDownload) {
+        // Use -ss after -i for pipe inputs (output seeking)
         args.push('-ss', startTime.toString());
-        log.info('Using input seeking for pipe input', {
+        log.info('Using output seeking for pipe input', {
           startTime,
-          note: 'ffmpeg will skip reading until startTime at demuxer level',
+          note: 'Output seeking required for pipes - ffmpeg will decode then discard frames until startTime',
+        });
+      } else if (usingYtdlpSectionDownload) {
+        log.info('Skipping -ss in ffmpeg - yt-dlp already downloaded the section', {
+          startTime,
+          duration,
+          note: 'File is already trimmed, our ffmpeg will transcode and apply filters',
         });
       }
-      args.push('-i', 'pipe:0');
     }
 
-    // Duration
+    // Duration - always add to ensure exact output length
+    // yt-dlp's stream copy may produce slightly longer files due to packet boundaries
     if (duration) {
       args.push('-t', duration.toString());
     }
 
-    // Audio codec and filters
-    args.push(
-      '-acodec',
-      'libmp3lame',
-      '-b:a',
-      '128k',
-      '-ac',
-      '2',
-      '-ar',
-      '44100',
-      '-af',
-      'dynaudnorm=g=21:m=40:c=1:b=0,afftdn,pan=stereo|c0<c0+c1|c1<c0+c1,loudnorm=I=-16:LRA=11:TP=-1.5',
-      '-f',
-      'mp3'
-    );
+    // Audio codec and filters - ALWAYS applied to ensure consistent audio processing
+    // These filters normalize, denoise, and adjust loudness regardless of input source
+    const audioFilters =
+      'dynaudnorm=g=21:m=40:c=1:b=0,afftdn,pan=stereo|c0<c0+c1|c1<c0+c1,loudnorm=I=-16:LRA=11:TP=-1.5';
+    args.push('-acodec', 'libmp3lame', '-b:a', '128k', '-ac', '2', '-ar', '44100', '-af', audioFilters, '-f', 'mp3');
+
+    if (usingYtdlpSectionDownload) {
+      log.info('Transcoding and applying audio filters to yt-dlp downloaded section', {
+        filters: audioFilters,
+        note: 'File is in original format, our ffmpeg will transcode to MP3 and apply all filters in one pass',
+      });
+    }
 
     // Output to pipe
     args.push('pipe:1');
@@ -243,8 +309,6 @@ const trimAndTranscode = async (
       if (!proc || !proc.stdin) {
         throw new Error('FFmpeg process or stdin is null but input is a stream');
       }
-      // Use end: false to prevent automatic closing when inputSource ends
-      // This allows ffmpeg to control when stdin closes (important for seeking)
       inputSource.pipe(proc.stdin, { end: false });
       const procForErrorHandler = proc; // Capture for error handler
 
