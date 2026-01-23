@@ -1,7 +1,7 @@
 import express, { Request } from 'express';
 import { executeWithTimeout, getAudioSource, getFFmpegPath, logMemoryUsage, validateAddIntroOutroData } from './utils';
 import { ProcessAudioInputType, sermonStatusType, uploadStatus, sermonStatus } from './types';
-import { AxiosError, isAxiosError } from 'axios';
+import { isAxiosError } from 'axios';
 import { processAudio } from './processAudio';
 import { CancelToken } from './CancelToken';
 import { firestoreAdminSermonConverter } from './firestoreAdminDataConverter';
@@ -73,13 +73,8 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
   const timeoutMillis = (TIMEOUT_SECONDS - 30) * 1000; // 30s less than timeoutSeconds
   const data = request.body?.data;
 
-  // Create context for this request - ensure sermonId is always set
-  const sermonId = data?.id;
-  const ctx = createContext(sermonId, 'process-audio');
-  // Ensure sermonId is set even if data.id was undefined (fallback to empty string to maintain context structure)
-  if (!ctx.sermonId && sermonId) {
-    ctx.sermonId = sermonId;
-  }
+  // Create context for this request
+  const ctx = createContext(data?.id, 'process-audio');
   const log = createLoggerWithContext(ctx);
 
   log.info('Request received', {
@@ -138,11 +133,11 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
     res.status(200).send();
   } catch (e) {
     let message = 'Something Went Wrong';
-    if (e instanceof Error) {
+    if (isAxiosError(e)) {
+      // Check Axios errors first since AxiosError extends Error
       message = e.message;
-    } else if (isAxiosError(e)) {
-      const axiosError = e as AxiosError;
-      message = axiosError.message;
+    } else if (e instanceof Error) {
+      message = e.message;
     }
 
     log.error('Request failed', {

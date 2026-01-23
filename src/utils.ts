@@ -27,8 +27,15 @@ export const logMemoryUsage = async (message: string, ctx?: LogContext) => {
 
   for (const file of files) {
     const filePath = path.join(tempDir, file);
-    const fileStats = await stat(filePath);
-    totalSize += fileStats.size;
+    try {
+      const fileStats = await stat(filePath);
+      totalSize += fileStats.size;
+    } catch (err) {
+      // File was deleted between readdir and stat - skip it
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        throw err;
+      }
+    }
   }
   const memoryUsageInMB = {
     rss: parseFloat((memoryUsage.rss / (1024 * 1024)).toFixed(2)), // Resident Set Size
@@ -55,7 +62,7 @@ export const createTempFile = (fileName: string, tempFiles: Set<string>) => {
 };
 
 export const convertStringToMilliseconds = (timeStr: string): number => {
-  // '10:20:30:500'  Example time string
+  // Example time string: '10:20:30.500' (HH:MM:SS.ms format from ffmpeg)
   if (!timeStr) {
     return 0;
   }
@@ -65,7 +72,18 @@ export const convertStringToMilliseconds = (timeStr: string): number => {
   }
   const [seconds, milliseconds] = secondsAndMilliseconds.split('.');
 
-  return (parseInt(hours) * 60 * 60 + parseInt(minutes) * 60 + parseInt(seconds)) * 1000 + parseInt(milliseconds);
+  const h = parseInt(hours, 10);
+  const m = parseInt(minutes, 10);
+  const s = parseInt(seconds, 10);
+  const ms = parseInt(milliseconds || '0', 10);
+
+  // Validate parsed values to prevent NaN propagation
+  if (isNaN(h) || isNaN(m) || isNaN(s) || isNaN(ms)) {
+    logger.warn('Failed to parse time string', { timeStr, hours, minutes, seconds, milliseconds });
+    return 0;
+  }
+
+  return (h * 60 * 60 + m * 60 + s) * 1000 + ms;
 };
 
 export function secondsToTimeFormat(durationSeconds: number) {
@@ -271,37 +289,54 @@ export function validateAddIntroOutroData(data: unknown): data is ProcessAudioIn
   if (!(data instanceof Object)) return false;
   const inputData = data as Partial<ProcessAudioInputType>;
 
-  if ('youtubeUrl' in inputData) {
-    if (!inputData.youtubeUrl) {
-      const errorMessage = 'youtubeUrl cannot be empty if defined';
-      logger.error('Invalid Argument', errorMessage);
-      return false;
-    }
-  } else if ('storageFilePath' in inputData) {
-    if (!inputData.storageFilePath) {
-      const errorMessage = 'storageFilePath cannot me empty if defined';
-      logger.error('Invalid Argument', errorMessage);
-      return false;
-    }
-  } else {
-    const errorMessage =
-      'inputData must contain either a valid youtubeUrl (string) or storageFilePath (string) properties';
-    logger.error('Invalid Argument', errorMessage);
+  // Validate id is a non-empty string
+  if (typeof inputData.id !== 'string' || !inputData.id) {
+    logger.error('Invalid Argument', 'id must be a non-empty string');
     return false;
   }
 
-  if (
-    !inputData.id ||
-    inputData.startTime === undefined ||
-    inputData.startTime === null ||
-    inputData.duration === null ||
-    inputData.duration === undefined
-  ) {
-    const errorMessage =
-      'Data must contain id (string), startTime (number), and endTime (number) properties || optionally introUrl (string) and outroUrl (string)';
-    logger.error('Invalid Argument', errorMessage);
+  // Validate startTime is a finite number (can be 0)
+  if (typeof inputData.startTime !== 'number' || !Number.isFinite(inputData.startTime)) {
+    logger.error('Invalid Argument', 'startTime must be a finite number');
     return false;
   }
+
+  // Validate duration is a positive finite number
+  if (typeof inputData.duration !== 'number' || !Number.isFinite(inputData.duration) || inputData.duration <= 0) {
+    logger.error('Invalid Argument', 'duration must be a positive finite number');
+    return false;
+  }
+
+  // Validate audio source (youtubeUrl or storageFilePath)
+  if ('youtubeUrl' in inputData) {
+    if (typeof inputData.youtubeUrl !== 'string' || !inputData.youtubeUrl) {
+      logger.error('Invalid Argument', 'youtubeUrl must be a non-empty string');
+      return false;
+    }
+  } else if ('storageFilePath' in inputData) {
+    if (typeof inputData.storageFilePath !== 'string' || !inputData.storageFilePath) {
+      logger.error('Invalid Argument', 'storageFilePath must be a non-empty string');
+      return false;
+    }
+  } else {
+    logger.error(
+      'Invalid Argument',
+      'inputData must contain either a valid youtubeUrl (string) or storageFilePath (string) properties'
+    );
+    return false;
+  }
+
+  // Validate optional fields if present
+  if (inputData.introUrl !== undefined && (typeof inputData.introUrl !== 'string' || !inputData.introUrl)) {
+    logger.error('Invalid Argument', 'introUrl must be a non-empty string if provided');
+    return false;
+  }
+
+  if (inputData.outroUrl !== undefined && (typeof inputData.outroUrl !== 'string' || !inputData.outroUrl)) {
+    logger.error('Invalid Argument', 'outroUrl must be a non-empty string if provided');
+    return false;
+  }
+
   return true;
 }
 

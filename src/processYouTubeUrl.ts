@@ -4,6 +4,7 @@ import { ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import { Writable } from 'stream';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
 import { Database } from 'firebase-admin/database';
 import { createLoggerWithContext } from './WinstonLogger';
 import { LogContext } from './context';
@@ -81,7 +82,9 @@ async function prepareCookiesArgs(
       args.push('--cookies-from-browser', 'chrome');
     }
   } else {
-    cookiesFilePath = path.join(__dirname, 'cookies.txt');
+    // Use temp directory for cookies file to ensure proper cleanup
+    // Include timestamp to avoid conflicts if multiple requests somehow overlap
+    cookiesFilePath = path.join(os.tmpdir(), `yt-dlp-cookies-${Date.now()}.txt`);
     const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
     const encodedCookies = await cookiesPath.get();
 
@@ -89,7 +92,7 @@ async function prepareCookiesArgs(
       try {
         const decodedCookies = Buffer.from(encodedCookies.val(), 'base64').toString('utf8');
         fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
-        log.debug('Cookies file created from database');
+        log.debug('Cookies file created from database', { path: cookiesFilePath });
         args.push('--cookies', cookiesFilePath);
       } catch (err) {
         log.error('Failed to decode and write cookies file', { error: err });
@@ -102,6 +105,29 @@ async function prepareCookiesArgs(
   }
 
   return { args, cookiesFilePath };
+}
+
+/**
+ * Cleans up the cookies file if it exists
+ */
+function cleanupCookiesFile(
+  cookiesFilePath: string | undefined,
+  log: ReturnType<typeof createLoggerWithContext>
+): void {
+  if (cookiesFilePath) {
+    try {
+      if (fs.existsSync(cookiesFilePath)) {
+        fs.unlinkSync(cookiesFilePath);
+        log.debug('Cookies file cleaned up', { path: cookiesFilePath });
+      }
+    } catch (err) {
+      // Non-fatal - just log the warning
+      log.warn('Failed to clean up cookies file', {
+        path: cookiesFilePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 /**
@@ -142,7 +168,7 @@ export const getYouTubeAudioUrl = async (
   ];
 
   // Add cookies
-  const { args: cookieArgs } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
   args.push(...cookieArgs);
 
   // Add JS runtime
@@ -168,10 +194,14 @@ export const getYouTubeAudioUrl = async (
 
     ytdlp.on('error', (err) => {
       log.error('yt-dlp spawn error while getting URL', { error: err });
+      cleanupCookiesFile(cookiesFilePath, log);
       reject(new Error(`yt-dlp spawn error: ${err}`));
     });
 
     ytdlp.on('close', (code) => {
+      // Clean up cookies file regardless of success or failure
+      cleanupCookiesFile(cookiesFilePath, log);
+
       if (code === 0) {
         const lines = stdout
           .trim()
@@ -240,7 +270,7 @@ export const processYouTubeUrl = async (
   const args = ['-f', 'bestaudio/best', '-N', '4', '--no-playlist', '-o', '-'];
 
   // Add cookies
-  const { args: cookieArgs } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
   args.push(...cookieArgs);
 
   // Add JS runtime
@@ -255,10 +285,14 @@ export const processYouTubeUrl = async (
 
   ytdlp.on('error', (err) => {
     log.error('yt-dlp spawn error', { error: err });
+    cleanupCookiesFile(cookiesFilePath, log);
     passThrough.emit('error', new Error(`getYoutubeStream error ${err}`));
   });
 
   ytdlp.on('close', (code) => {
+    // Clean up cookies file when process ends
+    cleanupCookiesFile(cookiesFilePath, log);
+
     if (code === 0) {
       log.debug('yt-dlp completed successfully', { totalMB: (totalBytes / (1024 * 1024)).toFixed(2) });
     } else {
@@ -440,7 +474,7 @@ export const downloadYouTubeSection = async (
   log.debug('Using Node.js as JavaScript runtime for yt-dlp');
 
   // Add cookies
-  const { args: cookieArgs } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
   args.push(...cookieArgs);
 
   args.push(url);
@@ -460,10 +494,14 @@ export const downloadYouTubeSection = async (
 
     ytdlp.on('error', (err) => {
       log.error('yt-dlp spawn error', { error: err });
+      cleanupCookiesFile(cookiesFilePath, log);
       reject(new Error(`yt-dlp spawn error: ${err}`));
     });
 
     ytdlp.on('close', (code, signal) => {
+      // Clean up cookies file when process ends
+      cleanupCookiesFile(cookiesFilePath, log);
+
       const dir = path.dirname(outputFilePath);
       const baseName = path.basename(outputFilePath);
       let files: string[] = [];

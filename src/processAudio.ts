@@ -32,11 +32,8 @@ export const processAudio = async (
   ctx?: LogContext
 ): Promise<void> => {
   const fileName = audioSource.id;
-  // Ensure sermonId is always set in context - use fileName (which is the sermonId) if not in ctx
-  const contextWithSermonId = ctx ? { ...ctx } : createContext(fileName, 'process-audio');
-  if (!contextWithSermonId.sermonId && fileName) {
-    contextWithSermonId.sermonId = fileName;
-  }
+  // Use provided context or create a new one with sermonId
+  const contextWithSermonId = ctx ?? createContext(fileName, 'process-audio');
   const log = createLoggerWithContext(contextWithSermonId);
   const tempFiles = new Set<string>();
 
@@ -256,7 +253,11 @@ export const processAudio = async (
     });
 
     if (cancelToken.isCancellationRequested) return;
-    realtimeDB.ref(`addIntroOutro/${fileName}`).set(100);
+    await realtimeDB.ref(`addIntroOutro/${fileName}`).set(100).catch((err) => {
+      log.error('Failed to set final progress to 100%', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 
     // delete original audio file
     if (cancelToken.isCancellationRequested) return;
@@ -276,7 +277,11 @@ export const processAudio = async (
     });
     throw error;
   } finally {
-    await realtimeDB.ref(`addIntroOutro/${fileName}`).remove();
+    await realtimeDB.ref(`addIntroOutro/${fileName}`).remove().catch((err) => {
+      log.error('Failed to remove progress reference from realtimeDB', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
     const promises: Promise<void>[] = [];
     tempFiles.forEach((file) => {
       promises.push(
@@ -293,15 +298,3 @@ export const processAudio = async (
     }
   }
 };
-
-// const addintrooutrotaskhandler = onTaskDispatched(
-//   {
-//     timeoutSeconds: TIMEOUT_SECONDS,
-//     memory: "1GiB",
-//     cpu: 1,
-//     concurrency: 1,
-//     retryConfig: {
-//       maxAttempts: 2,
-//       minBackoffSeconds: 10,
-//     },
-//   },

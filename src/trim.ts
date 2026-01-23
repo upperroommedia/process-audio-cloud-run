@@ -6,6 +6,7 @@ import { convertStringToMilliseconds, createTempFile, logMemoryUsage, getFFmpegP
 import { CustomMetadata } from './types';
 import { unlink } from 'fs/promises';
 import { spawn } from 'child_process';
+import { finished } from 'stream';
 import { createLoggerWithContext } from './WinstonLogger';
 import { LogContext } from './context';
 
@@ -92,19 +93,48 @@ const trim = async (
   let totalTimeMillis: number | undefined;
   let previousPercent = -1;
 
+  // Use Node.js stream.finished() to properly wait for GCS upload completion
+  const writeStreamDone = new Promise<void>((resolveWrite, rejectWrite) => {
+    finished(writeStream, (err) => {
+      if (err) {
+        log.error('GCS write stream error', { error: err.message, code: (err as NodeJS.ErrnoException).code });
+        rejectWrite(err);
+      } else {
+        log.debug('GCS write stream finished - upload complete');
+        resolveWrite();
+      }
+    });
+  });
+
   const promiseResult = await new Promise<File>((resolve, reject) => {
     proc.on('error', (err) => {
       log.error('FFmpeg spawn error', { error: err });
       reject(err);
     });
 
-    proc.on('close', (code, signal) => {
-      if (code === 0) {
-        log.info('Trim completed successfully');
-        resolve(outputFile);
-      } else {
+    proc.on('close', async (code, signal) => {
+      log.debug('FFmpeg process closed', { exitCode: code, signal });
+
+      if (code !== 0) {
         log.error('FFmpeg process failed', { exitCode: code, signal });
+        // Catch writeStreamDone rejection to avoid unhandled promise rejection
+        writeStreamDone.catch((writeErr) => {
+          log.debug('Write stream also failed (expected if it caused FFmpeg termination)', {
+            error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+          });
+        });
         reject(new Error(`FFmpeg process exited with code ${code}`));
+        return;
+      }
+
+      // FFmpeg succeeded - now wait for GCS upload to complete
+      try {
+        await writeStreamDone;
+        log.info('Trim completed successfully', { outputPath: outputFilePath });
+        resolve(outputFile);
+      } catch (uploadErr) {
+        log.error('GCS upload failed after FFmpeg completed', { error: uploadErr });
+        reject(new Error(`GCS upload failed: ${uploadErr instanceof Error ? uploadErr.message : String(uploadErr)}`));
       }
     });
 
@@ -139,30 +169,40 @@ const trim = async (
             : startTime
             ? totalTimeMillis - startTime * 1000
             : totalTimeMillis;
-          // Calculate percentage (0-100%) then scale to 0-90% range for trim phase
-          // This ensures: trim 0-90%, merge 90-100% for continuous progress
-          const rawPercent = (timeMillis / calculatedDuration) * 100;
-          const percent = Math.round(Math.max(0, Math.min(90, rawPercent * 0.9)));
-          // Always log progress (more frequent than DB updates)
-          log.debug('Processing progress', { percent });
-          // Only update DB when percent actually changes (less frequent than logs)
-          if (percent > previousPercent) {
-            previousPercent = percent;
-            realtimeDBRef.set(percent).catch((err) => {
-              log.error('Failed to update progress in realtimeDB', {
-                error: err instanceof Error ? err.message : String(err),
-                percent,
+
+          // Guard against division by zero
+          if (calculatedDuration && calculatedDuration > 0) {
+            // Calculate percentage (0-100%) then scale to 0-90% range for trim phase
+            // This ensures: trim 0-90%, merge 90-100% for continuous progress
+            const rawPercent = (timeMillis / calculatedDuration) * 100;
+            const percent = Math.round(Math.max(0, Math.min(90, rawPercent * 0.9)));
+            // Always log progress (more frequent than DB updates)
+            log.debug('Processing progress', { percent });
+            // Only update DB when percent actually changes (less frequent than logs)
+            if (percent > previousPercent) {
+              previousPercent = percent;
+              realtimeDBRef.set(percent).catch((err) => {
+                log.error('Failed to update progress in realtimeDB', {
+                  error: err instanceof Error ? err.message : String(err),
+                  percent,
+                });
               });
-            });
-          } else if (percent < previousPercent) {
-            // Log when we detect backwards progress but don't update DB
-            log.debug('Skipping backwards progress update', {
-              previousPercent,
-              newPercent: percent,
+            } else if (percent < previousPercent) {
+              // Log when we detect backwards progress but don't update DB
+              log.debug('Skipping backwards progress update', {
+                previousPercent,
+                newPercent: percent,
+                timeMillis,
+              });
+            }
+            // If percent === previousPercent, we just log (already done above) but don't update DB
+          } else {
+            // Log time elapsed even if we can't calculate percentage (edge case)
+            log.debug('Processing (cannot calculate percentage - invalid duration)', {
               timeMillis,
+              calculatedDuration,
             });
           }
-          // If percent === previousPercent, we just log (already done above) but don't update DB
         }
       }
     });

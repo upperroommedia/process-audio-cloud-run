@@ -11,8 +11,10 @@ import {
 } from './utils';
 import { CustomMetadata, AudioSource } from './types';
 import { processYouTubeUrl, downloadYouTubeSection, getYouTubeAudioUrl } from './processYouTubeUrl';
-import { unlink } from 'fs/promises';
-import { PassThrough, Readable } from 'stream';
+import { unlink, readdir } from 'fs/promises';
+import { PassThrough, Readable, finished } from 'stream';
+import os from 'os';
+import path from 'path';
 import { ChildProcessWithoutNullStreams, spawn } from 'child_process';
 import { sermonStatus, sermonStatusType } from './types';
 import { createLoggerWithContext } from './WinstonLogger';
@@ -164,7 +166,12 @@ const trimAndTranscode = async (
       // Only update database if progress has increased (prevent backwards jumps)
       if (scaledProgress > maxDownloadProgress) {
         maxDownloadProgress = scaledProgress;
-        realtimeDBRef.set(scaledProgress);
+        realtimeDBRef.set(scaledProgress).catch((err) => {
+          log.error('Failed to update download progress', {
+            error: err instanceof Error ? err.message : String(err),
+            scaledProgress,
+          });
+        });
       }
     }
   };
@@ -219,7 +226,8 @@ const trimAndTranscode = async (
             fallback: 'Using --download-sections with --force-keyframes-at-cuts',
           });
 
-          const ytdlpOutputFile = createTempFile(`ytdlp-${audioSource.id}`, tempFiles);
+          const ytdlpOutputFileBase = `ytdlp-${audioSource.id}`;
+          const ytdlpOutputFile = createTempFile(ytdlpOutputFileBase, tempFiles);
           log.info('Falling back to yt-dlp section download', {
             startTime,
             duration,
@@ -227,28 +235,52 @@ const trimAndTranscode = async (
           });
 
           // Download the section using the fallback method
-          const downloadedFile = await downloadYouTubeSection(
-            ytdlpPath,
-            audioSource.source,
-            ytdlpOutputFile,
-            cancelToken,
-            updateDownloadProgress,
-            realtimeDB,
-            startTime,
-            duration ?? undefined,
-            ctx
-          );
+          // Wrap in try-catch to ensure cleanup of orphaned files on error
+          let downloadedFile: string;
+          try {
+            downloadedFile = await downloadYouTubeSection(
+              ytdlpPath,
+              audioSource.source,
+              ytdlpOutputFile,
+              cancelToken,
+              updateDownloadProgress,
+              realtimeDB,
+              startTime,
+              duration ?? undefined,
+              ctx
+            );
 
-          // yt-dlp adds extension to output file (e.g., .webm, .m4a), so the actual file
-          // path differs from the base path we registered. Update tempFiles to track the
-          // actual file path for proper cleanup.
-          if (downloadedFile !== ytdlpOutputFile) {
-            tempFiles.delete(ytdlpOutputFile);
-            tempFiles.add(downloadedFile);
-            log.debug('Updated tempFiles tracking for yt-dlp output', {
-              basePath: ytdlpOutputFile,
-              actualPath: downloadedFile,
-            });
+            // yt-dlp adds extension to output file (e.g., .webm, .m4a), so the actual file
+            // path differs from the base path we registered. Update tempFiles to track the
+            // actual file path for proper cleanup.
+            if (downloadedFile !== ytdlpOutputFile) {
+              tempFiles.delete(ytdlpOutputFile);
+              tempFiles.add(downloadedFile);
+              log.debug('Updated tempFiles tracking for yt-dlp output', {
+                basePath: ytdlpOutputFile,
+                actualPath: downloadedFile,
+              });
+            }
+          } catch (downloadError) {
+            // On error, attempt to find and track any orphaned files with the base name
+            // yt-dlp may have created a file with extension before failing
+            try {
+              const tempDir = os.tmpdir();
+              const files = await readdir(tempDir);
+              const orphanedFiles = files.filter((f) => f.startsWith(ytdlpOutputFileBase));
+              for (const orphanedFile of orphanedFiles) {
+                const orphanedPath = path.join(tempDir, orphanedFile);
+                if (!tempFiles.has(orphanedPath)) {
+                  tempFiles.add(orphanedPath);
+                  log.debug('Added orphaned yt-dlp file to cleanup tracking', { file: orphanedPath });
+                }
+              }
+            } catch (cleanupErr) {
+              log.warn('Failed to scan for orphaned yt-dlp files', {
+                error: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+              });
+            }
+            throw downloadError;
           }
 
           // DURATION VERIFICATION for fallback method
@@ -509,14 +541,47 @@ const trimAndTranscode = async (
     // Capture proc in const for use in promise callbacks
     const ffmpegProc = proc;
 
+    // Use Node.js stream.finished() to properly wait for GCS upload completion
+    // This handles 'finish', 'error', and premature 'close' events correctly
+    const writeStreamDone = new Promise<void>((resolveWrite, rejectWrite) => {
+      finished(writeStream, (err) => {
+        if (err) {
+          log.error('GCS write stream error', { error: err.message, code: (err as NodeJS.ErrnoException).code });
+          rejectWrite(err);
+        } else {
+          log.debug('GCS write stream finished - upload complete');
+          resolveWrite();
+        }
+      });
+    });
+
     const promiseResult = await new Promise<File>((resolve, reject) => {
       ffmpegProc.on('error', (err) => {
         log.error('FFmpeg spawn error', { error: err });
         reject(err);
       });
 
-      ffmpegProc.on('close', (code, signal) => {
-        if (code === 0) {
+      ffmpegProc.on('close', async (code, signal) => {
+        log.debug('FFmpeg process closed', { exitCode: code, signal });
+
+        if (code !== 0) {
+          log.error('FFmpeg process failed', { exitCode: code, signal });
+          // Catch writeStreamDone rejection to avoid unhandled promise rejection.
+          // If GCS write stream errored (which may have triggered this FFmpeg failure),
+          // writeStreamDone will reject. We must handle it even though we're already
+          // rejecting due to FFmpeg failure.
+          writeStreamDone.catch((writeErr) => {
+            log.debug('Write stream also failed (expected if it caused FFmpeg termination)', {
+              error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+            });
+          });
+          reject(new Error(`FFmpeg process exited with code ${code}`));
+          return;
+        }
+
+        // FFmpeg succeeded - now wait for GCS upload to complete
+        try {
+          await writeStreamDone;
           log.info('Trim and transcode completed successfully', {
             outputPath: outputFilePath,
             sourceType: audioSource.type,
@@ -544,9 +609,9 @@ const trimAndTranscode = async (
             ytdlp.kill('SIGTERM');
           }
           resolve(outputFile);
-        } else {
-          log.error('FFmpeg process failed', { exitCode: code, signal });
-          reject(new Error(`FFmpeg process exited with code ${code}`));
+        } catch (uploadErr) {
+          log.error('GCS upload failed after FFmpeg completed', { error: uploadErr });
+          reject(new Error(`GCS upload failed: ${uploadErr instanceof Error ? uploadErr.message : String(uploadErr)}`));
         }
       });
 

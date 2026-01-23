@@ -5,6 +5,7 @@ import { CustomMetadata } from './types';
 import { convertStringToMilliseconds, createTempFile, getFFmpegPath } from './utils';
 import { writeFileSync } from 'fs';
 import { spawn } from 'child_process';
+import { finished } from 'stream';
 import { createLoggerWithContext } from './WinstonLogger';
 import { LogContext } from './context';
 
@@ -47,7 +48,8 @@ const mergeFiles = async (
   });
 
   // ffmpeg -f concat -i mylist.txt -c copy output
-  const filePathsForTxt = filePaths.map((filePath) => `file '${filePath}'`);
+  // Escape single quotes in file paths to prevent ffmpeg concat format issues
+  const filePathsForTxt = filePaths.map((filePath) => `file '${filePath.replace(/'/g, "'\\''")}'`);
   const fileNames = filePathsForTxt.join('\n');
 
   writeFileSync(listFileName, fileNames);
@@ -74,24 +76,61 @@ const mergeFiles = async (
 
   let previousScaledPercent = -1;
 
+  // Use Node.js stream.finished() to properly wait for GCS upload completion
+  const writeStreamDone = new Promise<void>((resolveWrite, rejectWrite) => {
+    finished(writeStream, (err) => {
+      if (err) {
+        log.error('GCS write stream error', { error: err.message, code: (err as NodeJS.ErrnoException).code });
+        rejectWrite(err);
+      } else {
+        log.debug('GCS write stream finished - upload complete');
+        resolveWrite();
+      }
+    });
+  });
+
   return new Promise((resolve, reject) => {
     // Set initial merge progress to 98% (transcode phase complete)
-    realtimeDBref.set(98);
+    realtimeDBref.set(98).catch((err) => {
+      log.error('Failed to set initial merge progress', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 
     proc.on('error', (err) => {
       log.error('FFmpeg spawn error', { error: err });
       reject(err);
     });
 
-    proc.on('close', (code, signal) => {
-      if (code === 0) {
-        log.info('Merge completed successfully');
-        // Set to 100% when merge completes
-        realtimeDBref.set(100);
-        resolve(outputFile);
-      } else {
+    proc.on('close', async (code, signal) => {
+      log.debug('FFmpeg process closed', { exitCode: code, signal });
+
+      if (code !== 0) {
         log.error('FFmpeg process failed', { exitCode: code, signal });
+        // Catch writeStreamDone rejection to avoid unhandled promise rejection
+        writeStreamDone.catch((writeErr) => {
+          log.debug('Write stream also failed (expected if it caused FFmpeg termination)', {
+            error: writeErr instanceof Error ? writeErr.message : String(writeErr),
+          });
+        });
         reject(new Error(`FFmpeg process exited with code ${code}`));
+        return;
+      }
+
+      // FFmpeg succeeded - now wait for GCS upload to complete
+      try {
+        await writeStreamDone;
+        log.info('Merge completed successfully', { outputPath: outputFilePath });
+        // Set to 100% when merge completes
+        realtimeDBref.set(100).catch((err) => {
+          log.error('Failed to set final merge progress', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+        resolve(outputFile);
+      } catch (uploadErr) {
+        log.error('GCS upload failed after FFmpeg completed', { error: uploadErr });
+        reject(new Error(`GCS upload failed: ${uploadErr instanceof Error ? uploadErr.message : String(uploadErr)}`));
       }
     });
 
