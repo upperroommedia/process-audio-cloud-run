@@ -156,6 +156,10 @@ export const getYouTubeAudioUrl = async (
   // Add JS runtime
   args.push('--no-js-runtimes', '--js-runtimes', 'node');
 
+  if (!isDevelopment) {
+    args.push('--force-ipv4');
+  }
+
   args.push(url);
 
   const command = `${ytdlpPath} ${args.join(' ')}`;
@@ -249,7 +253,8 @@ export const processYouTubeUrl = async (
 
   // Pipes output to stdout - downloads FULL stream, seeking handled by our FFmpeg
   // NOTE: For precise section downloads with seeking, use getYouTubeAudioUrl + FFmpeg input seeking instead
-  const args = ['-f', 'bestaudio/best', '-N', '4', '--no-playlist', '-o', '-'];
+  // -N 12: concurrent fragments (DASH); helps throughput from YouTube to cloud.
+  const args = ['-f', 'bestaudio/best', '-N', '12', '--no-playlist', '-o', '-'];
 
   // Add cookies
   const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
@@ -258,6 +263,10 @@ export const processYouTubeUrl = async (
   // Add JS runtime
   args.push('--no-js-runtimes', '--js-runtimes', 'node');
   log.debug('Using Node.js as JavaScript runtime for yt-dlp');
+
+  if (!isDevelopment) {
+    args.push('--force-ipv4');
+  }
 
   args.push(url);
 
@@ -429,11 +438,12 @@ export const downloadYouTubeSection = async (
   // - Downloads only the section we need (efficient bandwidth)
   // - Gets EXACT cuts at requested start/end times (no extra content)
   // - yt-dlp handles re-encoding for precise cuts; our ffmpeg applies filters
+  // -N 12: concurrent fragments (DASH); helps throughput from YouTube to cloud.
   const args = [
     '-f',
     'bestaudio/best', // Get best audio format
     '-N',
-    '4',
+    '12',
     '--no-playlist',
     '--download-sections',
     sectionRange,
@@ -457,6 +467,10 @@ export const downloadYouTubeSection = async (
   // Add cookies
   const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
   args.push(...cookieArgs);
+
+  if (!isDevelopment) {
+    args.push('--force-ipv4');
+  }
 
   args.push(url);
 
