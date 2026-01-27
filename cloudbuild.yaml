@@ -38,6 +38,7 @@ steps:
         '--memory',
         '4Gi',
         '--cpu-boost',
+        '--no-cpu-throttling',
         '--concurrency',
         '1',
         '--max-instances',

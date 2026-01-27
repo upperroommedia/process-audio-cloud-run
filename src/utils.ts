@@ -2,7 +2,7 @@ import os from 'os';
 import path from 'path';
 import { exec, spawn } from 'node:child_process';
 import { createWriteStream, existsSync, mkdirSync } from 'fs';
-import { readdir, stat } from 'fs/promises';
+import { stat } from 'fs/promises';
 import { ProcessAudioInputType, AudioSource, CustomMetadata, FilePaths } from './types';
 import { Bucket } from '@google-cloud/storage';
 import axios from 'axios';
@@ -18,31 +18,37 @@ export const throwErrorOnSpecificStderr = (stderrLine: string) => {
   }
 };
 
-export const logMemoryUsage = async (message: string, ctx?: LogContext) => {
+/**
+ * Log process memory and optionally "our" /tmp usage (sum of tempFiles sizes).
+ * Avoids scanning all of os.tmpdir(); when tempFiles is passed, satisfies GCP "calculate memory including /tmp".
+ */
+export const logMemoryUsage = async (
+  message: string,
+  ctx?: LogContext,
+  tempFiles?: Set<string>
+): Promise<void> => {
   const log = createLoggerWithContext(ctx);
   const memoryUsage = process.memoryUsage();
-  const tempDir = os.tmpdir();
-  const files = await readdir(tempDir);
-  let totalSize = 0;
+  let tempDirMB = 0;
 
-  for (const file of files) {
-    const filePath = path.join(tempDir, file);
-    try {
-      const fileStats = await stat(filePath);
-      totalSize += fileStats.size;
-    } catch (err) {
-      // File was deleted between readdir and stat - skip it
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
-        throw err;
+  if (tempFiles && tempFiles.size > 0) {
+    for (const filePath of tempFiles) {
+      try {
+        const fileStats = await stat(filePath);
+        tempDirMB += fileStats.size;
+      } catch {
+        /* ignore missing or inaccessible */
       }
     }
+    tempDirMB = parseFloat((tempDirMB / (1024 * 1024)).toFixed(2));
   }
+
   const memoryUsageInMB = {
-    rss: parseFloat((memoryUsage.rss / (1024 * 1024)).toFixed(2)), // Resident Set Size
-    heapTotal: parseFloat((memoryUsage.heapTotal / (1024 * 1024)).toFixed(2)), // Total size of the allocated heap
-    heapUsed: parseFloat((memoryUsage.heapUsed / (1024 * 1024)).toFixed(2)), // Actual memory used
-    external: parseFloat((memoryUsage.external / (1024 * 1024)).toFixed(2)), // Memory used by C++ objects bound to JavaScript objects
-    tempDir: parseFloat((totalSize / (1024 * 1024)).toFixed(2)), // Memory used by the tempDir in MB
+    rss: parseFloat((memoryUsage.rss / (1024 * 1024)).toFixed(2)),
+    heapTotal: parseFloat((memoryUsage.heapTotal / (1024 * 1024)).toFixed(2)),
+    heapUsed: parseFloat((memoryUsage.heapUsed / (1024 * 1024)).toFixed(2)),
+    external: parseFloat((memoryUsage.external / (1024 * 1024)).toFixed(2)),
+    tempDir: tempDirMB,
   };
 
   log.debug(message, memoryUsageInMB);

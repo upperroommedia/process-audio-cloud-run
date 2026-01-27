@@ -770,11 +770,11 @@ const trimAndTranscode = async (
 
     // Delete raw audio from temp memory - but NOT if using direct URL (URL is not a local file)
     if (typeof inputSource === 'string' && !usedDirectUrlWithSeeking) {
-      await logMemoryUsage('Before raw audio delete', ctx);
+      await logMemoryUsage('Before raw audio delete', ctx, tempFiles);
       log.debug('Deleting raw audio temp file', { file: inputSource });
       await unlink(inputSource);
       tempFiles.delete(inputSource);
-      await logMemoryUsage('After raw audio delete', ctx);
+      await logMemoryUsage('After raw audio delete', ctx, tempFiles);
     } else if (usedDirectUrlWithSeeking) {
       log.debug('Skipping temp file deletion - input was direct URL, not local file');
     }
@@ -816,7 +816,7 @@ const trimAndTranscode = async (
 
     throw error; // Bubble up the error
   } finally {
-    await logMemoryUsage('After trim and transcode', ctx);
+    await logMemoryUsage('After trim and transcode', ctx, tempFiles);
   }
 };
 

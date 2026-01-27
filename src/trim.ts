@@ -209,11 +209,11 @@ const trim = async (
   });
 
   // Delete raw audio from temp memory
-  await logMemoryUsage('Before raw audio delete', ctx);
+  await logMemoryUsage('Before raw audio delete', ctx, tempFiles);
   log.debug('Deleting raw audio temp file', { file: rawSourceFile });
   await unlink(rawSourceFile);
   tempFiles.delete(rawSourceFile);
-  await logMemoryUsage('After raw audio delete', ctx);
+  await logMemoryUsage('After raw audio delete', ctx, tempFiles);
 
   return promiseResult;
 };

@@ -47,7 +47,7 @@ export const processAudio = async (
     hasOutro: !!outroUrl,
   });
 
-  await logMemoryUsage('Initial Memory Usage', contextWithSermonId);
+  await logMemoryUsage('Initial Memory Usage', contextWithSermonId, tempFiles);
 
   // Log Firestore connection details
   const isDevelopment = process.env.NODE_ENV === 'development';
@@ -66,6 +66,7 @@ export const processAudio = async (
   let currentTry = 0;
   let docFound = false;
   let title = 'untitled';
+  let existingStatus: sermonStatus | undefined;
   while (currentTry < maxTries) {
     currentTry++;
     log.debug('Checking if document exists', {
@@ -79,7 +80,9 @@ export const processAudio = async (
 
     if (doc.exists) {
       docFound = true;
-      title = doc.data()?.title || 'No title found';
+      const d = doc.data();
+      title = d?.title || 'No title found';
+      existingStatus = d?.status as sermonStatus | undefined;
       log.info('Document found', { documentPath, title, attempt: currentTry });
       break;
     }
@@ -106,11 +109,16 @@ export const processAudio = async (
     throw new Error(`Sermon Document ${fileName} Not Found at path: ${documentPath}`);
   }
 
+  if (existingStatus?.audioStatus === sermonStatusType.PROCESSED) {
+    log.info('Sermon already processed, skipping (idempotent)', { documentPath, fileName });
+    return;
+  }
+
   try {
     if (cancelToken.isCancellationRequested) return;
     await docRef.update({
       status: {
-        ...sermonStatus,
+        ...(existingStatus ?? sermonStatus),
         audioStatus: sermonStatusType.PROCESSING,
         message: 'Getting Data',
       },
@@ -236,7 +244,7 @@ export const processAudio = async (
         mergeCtx
       );
       log.info('Files merged successfully', { outputPath: mergedOutputFile.name });
-      await logMemoryUsage('Memory Usage after merge', contextWithSermonId);
+      await logMemoryUsage('Memory Usage after merge', contextWithSermonId, tempFiles);
     } else {
       log.debug('No intro or outro, skipping merge');
     }

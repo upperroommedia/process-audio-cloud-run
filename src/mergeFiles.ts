@@ -37,7 +37,8 @@ const mergeFiles = async (
 
   log.info('Starting file merge', { fileCount: filePaths.length, outputPath: outputFilePath });
 
-  const listFileName = createTempFile('list.txt', tempFiles);
+  const listBase = `list-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.txt`;
+  const listFileName = createTempFile(listBase, tempFiles);
   const outputFile = bucket.file(outputFilePath);
   const contentDisposition = customMetadata.title
     ? `inline; filename="${customMetadata.title}.mp3"`
