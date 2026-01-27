@@ -180,74 +180,62 @@ const trimAndTranscode = async (
     if (audioSource.type === 'YouTubeUrl') {
       log.info('Processing YouTube URL', { url: audioSource.source });
 
-      // If we have startTime, we can either use direct URL + FFmpeg seeking or yt-dlp section download.
-      // On Cloud Run, ALWAYS use section download: FFmpeg HTTP seeking on YouTube URLs often fails to
-      // use range requests properly, so FFmpeg may download the entire stream then discard—causing
-      // 10x+ slowdown. Section download fetches only the needed slice via yt-dlp.
-      const preferSectionDownload = !!process.env.K_SERVICE;
-      const willTryDirectUrl = !preferSectionDownload;
-
+      // If we have startTime, use direct URL + FFmpeg input seeking approach
+      // This is MORE RELIABLE than --download-sections because:
+      // 1. We control the FFmpeg command directly (no silent failures)
+      // 2. FFmpeg input seeking on HTTP URLs uses range requests (efficient)
+      // 3. If seeking fails, FFmpeg will error out (not silently download from time 0)
       if (startTime !== undefined && startTime !== null) {
-        if (preferSectionDownload) {
-          log.info('Using yt-dlp section download (Cloud Run)', {
-            startTime,
-            duration,
-            note: 'Avoids FFmpeg HTTP seeking which can download full stream on cloud IPs',
+        log.info('Using direct URL + FFmpeg input seeking approach', {
+          startTime,
+          duration,
+          note: 'This approach gives us full control over seeking - no silent failures',
+        });
+
+        try {
+          // Step 1: Get the direct audio stream URL from YouTube
+          const urlResult = await getYouTubeAudioUrl(ytdlpPath, audioSource.source, realtimeDB, ctx);
+
+          log.info('Successfully extracted direct YouTube audio URL', {
+            format: urlResult.format,
+            videoDuration: urlResult.duration,
+            requestedStart: startTime,
+            requestedDuration: duration,
+            note: 'Will use FFmpeg input seeking (-ss before -i) for precise trimming',
           });
-        } else {
-          log.info('Using direct URL + FFmpeg input seeking approach', {
-            startTime,
-            duration,
-            note: 'This approach gives us full control over seeking - no silent failures',
+
+          // Report download progress as complete since we're not downloading yet
+          // (FFmpeg will handle the download with seeking)
+          updateDownloadProgress(100);
+
+          // Use the URL as input - FFmpeg will apply input seeking
+          inputSource = urlResult.url;
+          usedDirectUrlWithSeeking = true;
+
+          log.info('YouTube audio URL ready for FFmpeg processing', {
+            approach: 'direct_url_with_input_seeking',
+            inputType: 'url',
+            seekTo: startTime,
+            duration: duration,
+            note: 'FFmpeg will seek to exact position using HTTP range requests',
           });
-        }
+        } catch (urlError) {
+          // Fallback to downloadYouTubeSection if URL extraction fails
+          log.warn('Direct URL extraction failed, falling back to downloadYouTubeSection', {
+            error: urlError instanceof Error ? urlError.message : String(urlError),
+            fallback: 'Using --download-sections with --force-keyframes-at-cuts',
+          });
 
-        let directUrlSucceeded = false;
-        if (willTryDirectUrl) {
-          try {
-            const urlResult = await getYouTubeAudioUrl(ytdlpPath, audioSource.source, realtimeDB, ctx);
-
-            log.info('Successfully extracted direct YouTube audio URL', {
-              format: urlResult.format,
-              videoDuration: urlResult.duration,
-              requestedStart: startTime,
-              requestedDuration: duration,
-              note: 'Will use FFmpeg input seeking (-ss before -i) for precise trimming',
-            });
-
-            updateDownloadProgress(100);
-            inputSource = urlResult.url;
-            usedDirectUrlWithSeeking = true;
-            directUrlSucceeded = true;
-
-            log.info('YouTube audio URL ready for FFmpeg processing', {
-              approach: 'direct_url_with_input_seeking',
-              inputType: 'url',
-              seekTo: startTime,
-              duration: duration,
-              note: 'FFmpeg will seek to exact position using HTTP range requests',
-            });
-          } catch (urlError) {
-            log.warn('Direct URL extraction failed, falling back to downloadYouTubeSection', {
-              error: urlError instanceof Error ? urlError.message : String(urlError),
-              fallback: 'Using --download-sections with --force-keyframes-at-cuts',
-            });
-          }
-        }
-
-        if (!directUrlSucceeded) {
           const ytdlpOutputFileBase = `ytdlp-${audioSource.id}`;
           const ytdlpOutputFile = createTempFile(ytdlpOutputFileBase, tempFiles);
-          if (!willTryDirectUrl) {
-            log.info('yt-dlp section download', { startTime, duration, outputFile: ytdlpOutputFile });
-          } else {
-            log.info('Falling back to yt-dlp section download', {
-              startTime,
-              duration,
-              outputFile: ytdlpOutputFile,
-            });
-          }
+          log.info('Falling back to yt-dlp section download', {
+            startTime,
+            duration,
+            outputFile: ytdlpOutputFile,
+          });
 
+          // Download the section using the fallback method
+          // Wrap in try-catch to ensure cleanup of orphaned files on error
           let downloadedFile: string;
           try {
             downloadedFile = await downloadYouTubeSection(
@@ -485,8 +473,8 @@ const trimAndTranscode = async (
 
     // Pipe input if it's a stream
     if (typeof inputSource !== 'string') {
-      if (!inputSource || !proc?.stdin) {
-        throw new Error('Input stream or FFmpeg stdin missing');
+      if (!proc || !proc.stdin) {
+        throw new Error('FFmpeg process or stdin is null but input is a stream');
       }
       inputSource.pipe(proc.stdin, { end: false });
       const procForErrorHandler = proc; // Capture for error handler
