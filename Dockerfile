@@ -1,13 +1,29 @@
 # Use Node 22 (required by yt-dlp JS runtime) with Debian-slim (required for glibc DNS in ffmpeg)
 ARG NODE_VERSION=22
 ARG PNPM_VERSION=9.12.3
+ARG DEBIAN_MIRROR=https://mirrors.edge.kernel.org/debian
+ARG DEBIAN_SECURITY_MIRROR=https://security.debian.org/debian-security
+ARG DEBIAN_UPDATES_MIRROR=https://mirrors.edge.kernel.org/debian
 
 # ---------- Build stage ----------
 FROM node:${NODE_VERSION}-slim AS build
+ARG DEBIAN_MIRROR
+ARG DEBIAN_SECURITY_MIRROR
+ARG DEBIAN_UPDATES_MIRROR
 WORKDIR /usr/src/app
 
 # Install build dependencies (needed for native modules during npm install)
-RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf 'Acquire::By-Hash "yes";\n' > /etc/apt/apt.conf.d/99byhash \
+    && printf "deb %s bookworm main\n" "$DEBIAN_MIRROR" > /etc/apt/sources.list \
+    && printf "deb %s bookworm-security main\n" "$DEBIAN_SECURITY_MIRROR" >> /etc/apt/sources.list \
+    && printf "deb %s bookworm-updates main\n" "$DEBIAN_UPDATES_MIRROR" >> /etc/apt/sources.list \
+    && apt-get update -o Acquire::Retries=3 -o Acquire::https::No-Cache=true -o Acquire::http::Pipeline-Depth=0 \
+    && apt-get install -y --no-install-recommends python3 make g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install pnpm
 RUN npm install -g pnpm@${PNPM_VERSION}
@@ -26,6 +42,9 @@ RUN pnpm build
 
 # ---------- Production stage ----------
 FROM node:${NODE_VERSION}-slim AS production
+ARG DEBIAN_MIRROR
+ARG DEBIAN_SECURITY_MIRROR
+ARG DEBIAN_UPDATES_MIRROR
 ENV NODE_ENV=production
 WORKDIR /usr/src/app
 
@@ -33,7 +52,17 @@ WORKDIR /usr/src/app
 # - python3, make, g++: needed for native Node modules (protobufjs, etc.)
 # - wget: for yt-dlp download
 # - ffmpeg: includes ffmpeg + ffprobe (dynamically linked, supports DNS)
-RUN apt-get update && apt-get install -y python3 make g++ wget ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN apt-get update -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/apt/sources.list.d/debian.sources \
+    && printf 'Acquire::By-Hash "yes";\n' > /etc/apt/apt.conf.d/99byhash \
+    && printf "deb %s bookworm main\n" "$DEBIAN_MIRROR" > /etc/apt/sources.list \
+    && printf "deb %s bookworm-security main\n" "$DEBIAN_SECURITY_MIRROR" >> /etc/apt/sources.list \
+    && printf "deb %s bookworm-updates main\n" "$DEBIAN_UPDATES_MIRROR" >> /etc/apt/sources.list \
+    && apt-get update -o Acquire::Retries=3 -o Acquire::https::No-Cache=true -o Acquire::http::Pipeline-Depth=0 \
+    && apt-get install -y --no-install-recommends python3 make g++ wget ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Add yt-dlp (latest release)
 # yt-dlp will use Node.js 20+ (in container) as its JavaScript runtime
