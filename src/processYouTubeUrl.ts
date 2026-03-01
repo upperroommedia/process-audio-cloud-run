@@ -198,50 +198,105 @@ export const getYouTubeAudioUrl = async (
       });
     });
 
-  try {
-    log.debug('Executing yt-dlp to get audio URL', { command: `${ytdlpPath} ${args.join(' ')}` });
-    const result = await runYtDlp(args);
+  const extractFromResult = (
+    result: { code: number | null; stdout: string; stderr: string },
+    attemptUsesCookies: boolean
+  ): YouTubeAudioUrlResult => {
+    const lines = result.stdout
+      .trim()
+      .split('\n')
+      .filter((line) => line.trim());
 
-    if (result.code === 0) {
-      const lines = result.stdout
-        .trim()
-        .split('\n')
-        .filter((line) => line.trim());
+    // Output format: duration, ext, url (based on --print order)
+    if (lines.length >= 3) {
+      const duration = parseFloat(lines[0]) || undefined;
+      const format = lines[1] || 'unknown';
+      const streamUrl = lines[2];
 
-      // Output format: duration, ext, url (based on --print order)
-      if (lines.length >= 3) {
-        const duration = parseFloat(lines[0]) || undefined;
-        const format = lines[1] || 'unknown';
-        const streamUrl = lines[2];
-
-        if (streamUrl && streamUrl.startsWith('http')) {
-          log.info('Successfully extracted YouTube audio URL', {
-            format,
-            duration,
-            urlLength: streamUrl.length,
-            urlPreview: streamUrl.substring(0, 100) + '...',
-            usedCookies,
-          });
-          return { url: streamUrl, format, duration };
-        }
-
-        log.error('Invalid URL in yt-dlp output', { lines, usedCookies });
-        throw new Error('yt-dlp did not return a valid URL');
+      if (streamUrl && streamUrl.startsWith('http')) {
+        log.info('Successfully extracted YouTube audio URL', {
+          format,
+          duration,
+          urlLength: streamUrl.length,
+          urlPreview: streamUrl.substring(0, 100) + '...',
+          usedCookies: attemptUsesCookies,
+        });
+        return { url: streamUrl, format, duration };
       }
 
-      if (lines.length >= 1 && lines[lines.length - 1].startsWith('http')) {
-        // Fallback: just a URL
-        const streamUrl = lines[lines.length - 1];
-        log.info('Extracted YouTube audio URL (minimal info)', { urlLength: streamUrl.length, usedCookies });
-        return { url: streamUrl, format: 'unknown' };
-      }
-
-      log.error('Unexpected yt-dlp output format', { stdout: result.stdout, stderr: result.stderr, lines, usedCookies });
-      throw new Error(`Failed to parse yt-dlp output: ${result.stdout}`);
+      log.error('Invalid URL in yt-dlp output', { lines, usedCookies: attemptUsesCookies });
+      throw new Error('yt-dlp did not return a valid URL');
     }
 
-    log.error('yt-dlp failed to get URL', { code: result.code, stderr: result.stderr, usedCookies });
+    if (lines.length >= 1 && lines[lines.length - 1].startsWith('http')) {
+      // Fallback: just a URL
+      const streamUrl = lines[lines.length - 1];
+      log.info('Extracted YouTube audio URL (minimal info)', {
+        urlLength: streamUrl.length,
+        usedCookies: attemptUsesCookies,
+      });
+      return { url: streamUrl, format: 'unknown' };
+    }
+
+    log.error('Unexpected yt-dlp output format', {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      lines,
+      usedCookies: attemptUsesCookies,
+    });
+    throw new Error(`Failed to parse yt-dlp output: ${result.stdout}`);
+  };
+
+  const runExtractionAttempt = async (
+    attemptArgs: string[],
+    attemptUsesCookies: boolean,
+    attemptLabel: string
+  ): Promise<YouTubeAudioUrlResult> => {
+    log.debug('Executing yt-dlp to get audio URL', {
+      command: `${ytdlpPath} ${attemptArgs.join(' ')}`,
+      attempt: attemptLabel,
+      usedCookies: attemptUsesCookies,
+    });
+
+    const result = await runYtDlp(attemptArgs);
+    if (result.code === 0) {
+      return extractFromResult(result, attemptUsesCookies);
+    }
+
+    log.error('yt-dlp failed to get URL', {
+      code: result.code,
+      stderr: result.stderr,
+      attempt: attemptLabel,
+      usedCookies: attemptUsesCookies,
+    });
     throw new Error(`yt-dlp exited with code ${result.code}: ${result.stderr}`);
+  };
+
+  try {
+    try {
+      return await runExtractionAttempt(args, usedCookies, usedCookies ? 'with_cookies' : 'without_cookies');
+    } catch (cookieAttemptError) {
+      if (!usedCookies) {
+        throw cookieAttemptError;
+      }
+
+      const noCookieArgs = [...baseArgs, '--no-js-runtimes', '--js-runtimes', 'node', url];
+      log.warn('Retrying yt-dlp URL extraction without cookies after cookie-enabled attempt failed', {
+        firstError: cookieAttemptError instanceof Error ? cookieAttemptError.message : String(cookieAttemptError),
+      });
+
+      try {
+        return await runExtractionAttempt(noCookieArgs, false, 'without_cookies_retry');
+      } catch (noCookieRetryError) {
+        const firstError =
+          cookieAttemptError instanceof Error ? cookieAttemptError.message : String(cookieAttemptError);
+        const retryError =
+          noCookieRetryError instanceof Error ? noCookieRetryError.message : String(noCookieRetryError);
+        throw new Error(
+          `yt-dlp failed with cookies and without cookies. with-cookies error: ${firstError}; no-cookies retry error: ${retryError}`
+        );
+      }
+    }
   } finally {
     cleanupCookiesFile(cookiesFilePath, cleaned);
   }
