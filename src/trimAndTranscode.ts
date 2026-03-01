@@ -351,24 +351,43 @@ const trimAndTranscode = async (
       audioSource.type === 'YouTubeUrl' && startTime !== undefined && startTime !== null && usedYtdlpSectionDownload;
 
     if (usedDirectUrlWithSeeking && typeof inputSource === 'string' && inputSource.startsWith('http')) {
-      // DIRECT URL APPROACH: Use input seeking on HTTP URL
-      // -ss BEFORE -i tells FFmpeg to seek before reading, using HTTP range requests (efficient)
-      // This is the MOST RELIABLE approach - we control the FFmpeg command directly
-      if (startTime) {
-        args.push('-ss', startTime.toString());
-        log.info('Using input seeking on HTTP URL', {
-          startTime,
-          note: 'FFmpeg will use HTTP range requests to seek efficiently - no silent failures',
-        });
-      }
-      args.push('-i', inputSource);
+      // DIRECT URL APPROACH:
+      // Most URLs work best with fast input seeking (-ss before -i).
+      // For YouTube live DVR manifests, prefer output seeking (-ss after -i) for timestamp accuracy.
+      const isYouTubeLiveDvrManifest =
+        inputSource.includes('manifest.googlevideo.com') &&
+        (inputSource.includes('playlist_type/DVR') || inputSource.includes('/source/yt_live_broadcast'));
 
-      // Always apply duration limit for direct URL approach
+      if (startTime) {
+        if (isYouTubeLiveDvrManifest) {
+          args.push('-i', inputSource, '-ss', startTime.toString());
+          log.info('Using output seeking on YouTube DVR manifest for timestamp accuracy', {
+            startTime,
+            seekMode: 'output_seek',
+            dvrManifestDetected: true,
+            note: 'For live DVR manifests, output seeking is slower but more precise than input seeking',
+          });
+        } else {
+          // Treat -ss as an actual timestamp when input start time is non-zero.
+          args.push('-seek_timestamp', '1', '-ss', startTime.toString(), '-i', inputSource);
+          log.info('Using input seeking on HTTP URL', {
+            startTime,
+            seekMode: 'input_seek',
+            dvrManifestDetected: false,
+            note: 'FFmpeg will use HTTP range requests to seek efficiently; -seek_timestamp handles non-zero start times',
+          });
+        }
+      } else {
+        args.push('-i', inputSource);
+      }
+
+      // Always apply duration limit for direct URL approach.
       if (duration) {
         args.push('-t', duration.toString());
         log.info('Applying duration limit to FFmpeg', {
           duration,
-          note: 'Duration applied after -i to limit output length',
+          seekMode: isYouTubeLiveDvrManifest ? 'output_seek' : 'input_seek',
+          note: 'Duration applied during direct URL transcode',
         });
       }
     } else if (typeof inputSource === 'string') {
@@ -419,12 +438,21 @@ const trimAndTranscode = async (
     args.push('-acodec', 'libmp3lame', '-b:a', '128k', '-ac', '2', '-ar', '44100', '-af', audioFilters, '-f', 'mp3');
 
     if (usedDirectUrlWithSeeking) {
-      log.info('Transcoding from direct URL with input seeking', {
+      const isYouTubeLiveDvrManifest =
+        typeof inputSource === 'string' &&
+        inputSource.includes('manifest.googlevideo.com') &&
+        (inputSource.includes('playlist_type/DVR') || inputSource.includes('/source/yt_live_broadcast'));
+      const seekMode = isYouTubeLiveDvrManifest ? 'output_seek' : 'input_seek';
+      log.info('Transcoding from direct URL with seeking', {
         filters: audioFilters,
         approach: 'direct_url_with_input_seeking',
+        seekMode,
+        dvrManifestDetected: isYouTubeLiveDvrManifest,
         startTime,
         duration,
-        note: 'Using FFmpeg input seeking (-ss before -i) on HTTP URL - most reliable approach',
+        note: isYouTubeLiveDvrManifest
+          ? 'Using FFmpeg output seeking (-ss after -i) for YouTube DVR manifest timestamp accuracy'
+          : 'Using FFmpeg input seeking (-ss before -i) for efficient HTTP range-based seeking',
       });
     } else if (usingYtdlpSectionDownload) {
       log.info('Transcoding yt-dlp section (fallback) and applying audio filters', {
@@ -441,6 +469,11 @@ const trimAndTranscode = async (
     args.push('pipe:1');
 
     const commandLine = `${ffmpegPath} ${args.join(' ')}`;
+    const usesDvrManifestOutputSeek =
+      usedDirectUrlWithSeeking &&
+      typeof inputSource === 'string' &&
+      inputSource.includes('manifest.googlevideo.com') &&
+      (inputSource.includes('playlist_type/DVR') || inputSource.includes('/source/yt_live_broadcast'));
     log.info('FFmpeg command', {
       command: commandLine,
       inputType: usedDirectUrlWithSeeking ? 'http_url' : typeof inputSource === 'string' ? 'file' : 'pipe',
@@ -455,6 +488,8 @@ const trimAndTranscode = async (
           : 'standard',
         usingDirectUrlWithSeeking: usedDirectUrlWithSeeking,
         usingYtdlpSectionDownload,
+        seekMode: usedDirectUrlWithSeeking ? (usesDvrManifestOutputSeek ? 'output_seek' : 'input_seek') : 'n/a',
+        dvrManifestDetected: usesDvrManifestOutputSeek,
         secondaryTrimNeeded,
         secondaryTrimDuration: secondaryTrimNeeded ? secondaryTrimDuration : undefined,
         effectiveDuration: usedDirectUrlWithSeeking
