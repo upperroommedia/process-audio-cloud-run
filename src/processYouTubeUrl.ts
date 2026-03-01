@@ -112,6 +112,20 @@ function cleanupCookiesFile(cookiesFilePath: string | undefined, cleaned: { done
   unlink(cookiesFilePath).catch(() => {});
 }
 
+const COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS = 'youtube:player_client=default,-web_creator';
+
+function applyCookieSafeYouTubeExtractorArgs(
+  args: string[],
+  hasCookies: boolean,
+  log: ReturnType<typeof createLoggerWithContext>
+): void {
+  if (!hasCookies) return;
+  args.push('--extractor-args', COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS);
+  log.debug('Applying yt-dlp extractor args for cookie-authenticated YouTube request', {
+    extractorArgs: COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS,
+  });
+}
+
 /**
  * Gets the direct audio stream URL from YouTube using yt-dlp.
  * This URL can be used directly with FFmpeg for precise seeking.
@@ -138,7 +152,7 @@ export const getYouTubeAudioUrl = async (
   // -g (--get-url): Print the actual media URL
   // -f bestaudio: Get best audio format
   // --print format: Print format info
-  const args = [
+  const baseArgs = [
     '-f',
     'bestaudio/best',
     '-g', // Get URL only, don't download
@@ -151,78 +165,86 @@ export const getYouTubeAudioUrl = async (
 
   // Add cookies
   const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
-  args.push(...cookieArgs);
-
-  // Add JS runtime
-  args.push('--no-js-runtimes', '--js-runtimes', 'node');
-
-  args.push(url);
-
-  const command = `${ytdlpPath} ${args.join(' ')}`;
-  log.debug('Executing yt-dlp to get audio URL', { command });
+  const usedCookies = cookieArgs.length > 0;
 
   const cleaned = { done: false };
 
-  return new Promise<YouTubeAudioUrlResult>((resolve, reject) => {
-    const ytdlp = spawn(ytdlpPath, args);
-    let stdout = '';
-    let stderr = '';
+  const args = [...baseArgs, ...cookieArgs];
+  applyCookieSafeYouTubeExtractorArgs(args, usedCookies, log);
+  args.push('--no-js-runtimes', '--js-runtimes', 'node');
+  args.push(url);
 
-    ytdlp.stdout.on('data', (data) => {
-      stdout += data.toString();
+  const runYtDlp = (args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> =>
+    new Promise((resolve, reject) => {
+      const ytdlp = spawn(ytdlpPath, args);
+      let stdout = '';
+      let stderr = '';
+
+      ytdlp.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      ytdlp.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      ytdlp.on('error', (err) => {
+        log.error('yt-dlp spawn error while getting URL', { error: err });
+        reject(new Error(`yt-dlp spawn error: ${err}`));
+      });
+
+      ytdlp.on('close', (code) => {
+        resolve({ code, stdout, stderr });
+      });
     });
 
-    ytdlp.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
+  try {
+    log.debug('Executing yt-dlp to get audio URL', { command: `${ytdlpPath} ${args.join(' ')}` });
+    const result = await runYtDlp(args);
 
-    ytdlp.on('error', (err) => {
-      log.error('yt-dlp spawn error while getting URL', { error: err });
-      cleanupCookiesFile(cookiesFilePath, cleaned);
-      reject(new Error(`yt-dlp spawn error: ${err}`));
-    });
+    if (result.code === 0) {
+      const lines = result.stdout
+        .trim()
+        .split('\n')
+        .filter((line) => line.trim());
 
-    ytdlp.on('close', (code) => {
-      cleanupCookiesFile(cookiesFilePath, cleaned);
-      if (code === 0) {
-        const lines = stdout
-          .trim()
-          .split('\n')
-          .filter((line) => line.trim());
+      // Output format: duration, ext, url (based on --print order)
+      if (lines.length >= 3) {
+        const duration = parseFloat(lines[0]) || undefined;
+        const format = lines[1] || 'unknown';
+        const streamUrl = lines[2];
 
-        // Output format: duration, ext, url (based on --print order)
-        if (lines.length >= 3) {
-          const duration = parseFloat(lines[0]) || undefined;
-          const format = lines[1] || 'unknown';
-          const streamUrl = lines[2];
-
-          if (streamUrl && streamUrl.startsWith('http')) {
-            log.info('Successfully extracted YouTube audio URL', {
-              format,
-              duration,
-              urlLength: streamUrl.length,
-              urlPreview: streamUrl.substring(0, 100) + '...',
-            });
-            resolve({ url: streamUrl, format, duration });
-          } else {
-            log.error('Invalid URL in yt-dlp output', { lines });
-            reject(new Error('yt-dlp did not return a valid URL'));
-          }
-        } else if (lines.length >= 1 && lines[lines.length - 1].startsWith('http')) {
-          // Fallback: just a URL
-          const streamUrl = lines[lines.length - 1];
-          log.info('Extracted YouTube audio URL (minimal info)', { urlLength: streamUrl.length });
-          resolve({ url: streamUrl, format: 'unknown' });
-        } else {
-          log.error('Unexpected yt-dlp output format', { stdout, stderr, lines });
-          reject(new Error(`Failed to parse yt-dlp output: ${stdout}`));
+        if (streamUrl && streamUrl.startsWith('http')) {
+          log.info('Successfully extracted YouTube audio URL', {
+            format,
+            duration,
+            urlLength: streamUrl.length,
+            urlPreview: streamUrl.substring(0, 100) + '...',
+            usedCookies,
+          });
+          return { url: streamUrl, format, duration };
         }
-      } else {
-        log.error('yt-dlp failed to get URL', { code, stderr });
-        reject(new Error(`yt-dlp exited with code ${code}: ${stderr}`));
+
+        log.error('Invalid URL in yt-dlp output', { lines, usedCookies });
+        throw new Error('yt-dlp did not return a valid URL');
       }
-    });
-  });
+
+      if (lines.length >= 1 && lines[lines.length - 1].startsWith('http')) {
+        // Fallback: just a URL
+        const streamUrl = lines[lines.length - 1];
+        log.info('Extracted YouTube audio URL (minimal info)', { urlLength: streamUrl.length, usedCookies });
+        return { url: streamUrl, format: 'unknown' };
+      }
+
+      log.error('Unexpected yt-dlp output format', { stdout: result.stdout, stderr: result.stderr, lines, usedCookies });
+      throw new Error(`Failed to parse yt-dlp output: ${result.stdout}`);
+    }
+
+    log.error('yt-dlp failed to get URL', { code: result.code, stderr: result.stderr, usedCookies });
+    throw new Error(`yt-dlp exited with code ${result.code}: ${result.stderr}`);
+  } finally {
+    cleanupCookiesFile(cookiesFilePath, cleaned);
+  }
 };
 
 export const processYouTubeUrl = async (
@@ -254,6 +276,7 @@ export const processYouTubeUrl = async (
   // Add cookies
   const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
   args.push(...cookieArgs);
+  applyCookieSafeYouTubeExtractorArgs(args, cookieArgs.length > 0, log);
 
   // Add JS runtime
   args.push('--no-js-runtimes', '--js-runtimes', 'node');
@@ -457,6 +480,7 @@ export const downloadYouTubeSection = async (
   // Add cookies
   const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
   args.push(...cookieArgs);
+  applyCookieSafeYouTubeExtractorArgs(args, cookieArgs.length > 0, log);
 
   args.push(url);
 
