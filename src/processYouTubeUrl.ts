@@ -5,7 +5,7 @@ import { Writable } from 'stream';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
-import { unlink } from 'fs/promises';
+import { mkdtemp, rm, unlink, writeFile } from 'fs/promises';
 import { Database } from 'firebase-admin/database';
 import { createLoggerWithContext } from './WinstonLogger';
 import { LogContext } from './context';
@@ -20,6 +20,44 @@ export interface YouTubeAudioUrlResult {
   format: string;
   duration?: number;
 }
+
+interface YouTubeFragmentFormat {
+  format_id?: string;
+  ext?: string;
+  vcodec?: string;
+  protocol?: string;
+  abr?: number;
+  duration?: number;
+  fragments?: Array<{ url?: string }>;
+}
+
+interface YouTubeJsonInfo {
+  duration?: number;
+  formats?: YouTubeFragmentFormat[];
+}
+
+interface YouTubeAudioFragmentsResult {
+  duration?: number;
+  formatId: string;
+  ext: string;
+  fragmentUrls: string[];
+  fragmentDurationSeconds: number;
+}
+
+export type YouTubeTrimRoutingStrategy = 'direct_url' | 'section_download';
+
+export interface YouTubeTrimRoutingDecision {
+  strategy: YouTubeTrimRoutingStrategy;
+  reason: string;
+  formatId?: string;
+  protocol?: string;
+  hasFragments: boolean;
+  likelyDvr: boolean;
+  fragmentCount?: number;
+}
+
+const YTDLP_HTTP_USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36';
 
 function isRunningInDocker(): boolean {
   try {
@@ -61,6 +99,48 @@ function formatTimeForDownloadSections(seconds: number): string {
     return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   }
   return `${minutes}:${secs.toString().padStart(2, '0')}`;
+}
+
+function parseFragmentDurationFromUrl(fragmentUrl: string | undefined): number | undefined {
+  if (!fragmentUrl) return undefined;
+  const match = fragmentUrl.match(/\/dur\/([0-9]+(?:\.[0-9]+)?)/);
+  if (!match) return undefined;
+  const value = Number.parseFloat(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return undefined;
+  return value;
+}
+
+async function runCommandWithCapture(
+  command: string,
+  args: string[],
+  errorPrefix: string
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const proc = spawn(command, args);
+    let stdout = '';
+    let stderr = '';
+
+    proc.stdout.on('data', (data) => {
+      stdout += data.toString();
+    });
+    proc.stderr.on('data', (data) => {
+      stderr += data.toString();
+    });
+    proc.on('error', (err) => {
+      reject(new Error(`${errorPrefix} spawn error: ${err}`));
+    });
+    proc.on('close', (code, signal) => {
+      if (code === 0) {
+        resolve({ stdout, stderr });
+        return;
+      }
+      reject(
+        new Error(
+          `${errorPrefix} exited with code ${code}${signal ? ` (signal: ${signal})` : ''}. stderr: ${stderr.trim()}`
+        )
+      );
+    });
+  });
 }
 
 /**
@@ -125,6 +205,129 @@ function applyCookieSafeYouTubeExtractorArgs(
     extractorArgs: COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS,
   });
 }
+
+function selectPreferredAudioFormat(formats: YouTubeFragmentFormat[]): YouTubeFragmentFormat | undefined {
+  const candidates = formats.filter((f) => f && f.vcodec === 'none');
+  if (candidates.length === 0) return undefined;
+
+  candidates.sort((a, b) => {
+    const score = (fmt: YouTubeFragmentFormat): number => {
+      let s = 0;
+      if (fmt.ext === 'm4a') s += 100;
+      if (fmt.format_id === '140') s += 50;
+      if (typeof fmt.abr === 'number') s += Math.min(fmt.abr, 320);
+      if (Array.isArray(fmt.fragments) && fmt.fragments.length > 0) s += 10;
+      return s;
+    };
+    return score(b) - score(a);
+  });
+
+  return candidates[0];
+}
+
+export const getYouTubeTrimRoutingDecision = async (
+  ytdlpPath: string,
+  url: YouTubeUrl,
+  realtimeDB: Database,
+  ctx?: LogContext
+): Promise<YouTubeTrimRoutingDecision> => {
+  const log = createLoggerWithContext(ctx);
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const baseArgs = ['-J', '--no-playlist', '-f', 'bestaudio/best', '--no-js-runtimes', '--js-runtimes', 'node'];
+  const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  const hasCookies = cookieArgs.length > 0;
+  const cleaned = { done: false };
+
+  const buildArgs = (useCookies: boolean): string[] => {
+    const args = [...baseArgs];
+    if (useCookies) {
+      args.push(...cookieArgs);
+      applyCookieSafeYouTubeExtractorArgs(args, true, log);
+    }
+    args.push(url);
+    return args;
+  };
+
+  const classifyOutput = (stdout: string): YouTubeTrimRoutingDecision => {
+    let parsed: YouTubeJsonInfo;
+    try {
+      parsed = JSON.parse(stdout) as YouTubeJsonInfo;
+    } catch (err) {
+      throw new Error(`Failed to parse yt-dlp JSON output for routing: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const formats = Array.isArray(parsed.formats) ? parsed.formats : [];
+    const selected = selectPreferredAudioFormat(formats);
+    if (!selected) {
+      return {
+        strategy: 'direct_url',
+        reason: 'no_audio_format_selected',
+        hasFragments: false,
+        likelyDvr: false,
+      };
+    }
+
+    const fragmentUrls = (selected.fragments ?? []).map((f) => f?.url).filter((u): u is string => !!u);
+    const firstFragmentUrl = fragmentUrls[0] ?? '';
+    const hasFragments = fragmentUrls.length > 0;
+    const likelyDvr =
+      hasFragments &&
+      (firstFragmentUrl.includes('playlist_type/DVR') ||
+        firstFragmentUrl.includes('/source/yt_live_broadcast') ||
+        firstFragmentUrl.includes('/live/1/'));
+
+    if (likelyDvr) {
+      return {
+        strategy: 'section_download',
+        reason: 'dvr_fragmented_audio_detected',
+        formatId: selected.format_id,
+        protocol: selected.protocol,
+        hasFragments: true,
+        likelyDvr: true,
+        fragmentCount: fragmentUrls.length,
+      };
+    }
+
+    return {
+      strategy: 'direct_url',
+      reason: hasFragments ? 'fragmented_non_dvr_audio_detected' : 'non_fragmented_audio_detected',
+      formatId: selected.format_id,
+      protocol: selected.protocol,
+      hasFragments,
+      likelyDvr: false,
+      fragmentCount: hasFragments ? fragmentUrls.length : undefined,
+    };
+  };
+
+  const runAttempt = async (useCookies: boolean, attempt: string): Promise<YouTubeTrimRoutingDecision> => {
+    const args = buildArgs(useCookies);
+    log.info('Running YouTube trim routing preflight', {
+      url,
+      attempt,
+      usedCookies: useCookies,
+      command: `${ytdlpPath} ${args.join(' ')}`,
+    });
+    const { stdout, stderr } = await runCommandWithCapture(ytdlpPath, args, 'yt-dlp routing preflight');
+    if (stderr.trim()) {
+      log.debug('yt-dlp routing preflight stderr', { attempt, stderr: stderr.trim() });
+    }
+    return classifyOutput(stdout);
+  };
+
+  try {
+    try {
+      return await runAttempt(hasCookies, hasCookies ? 'with_cookies' : 'without_cookies');
+    } catch (cookieError) {
+      if (!hasCookies) throw cookieError;
+      log.warn('Retrying routing preflight without cookies after cookie-enabled attempt failed', {
+        firstError: cookieError instanceof Error ? cookieError.message : String(cookieError),
+      });
+      return await runAttempt(false, 'without_cookies_retry');
+    }
+  } finally {
+    cleanupCookiesFile(cookiesFilePath, cleaned);
+  }
+};
 
 /**
  * Gets the direct audio stream URL from YouTube using yt-dlp.
@@ -457,11 +660,236 @@ export const processYouTubeUrl = async (
   return ytdlp;
 };
 
+async function getYouTubeAudioFragments(
+  ytdlpPath: string,
+  url: YouTubeUrl,
+  realtimeDB: Database,
+  isDevelopment: boolean,
+  log: ReturnType<typeof createLoggerWithContext>
+): Promise<YouTubeAudioFragmentsResult> {
+  const baseArgs = ['-J', '--no-playlist', '-f', 'bestaudio/best', '--no-js-runtimes', '--js-runtimes', 'node'];
+  const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
+  const hasCookies = cookieArgs.length > 0;
+  const cleaned = { done: false };
+
+  const buildArgs = (useCookies: boolean): string[] => {
+    const args = [...baseArgs];
+    if (useCookies) {
+      args.push(...cookieArgs);
+      applyCookieSafeYouTubeExtractorArgs(args, true, log);
+    }
+    args.push(url);
+    return args;
+  };
+
+  const parseJson = (stdout: string): YouTubeAudioFragmentsResult => {
+    let parsed: YouTubeJsonInfo;
+    try {
+      parsed = JSON.parse(stdout) as YouTubeJsonInfo;
+    } catch (err) {
+      throw new Error(`Failed to parse yt-dlp JSON output: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    const formats = Array.isArray(parsed.formats) ? parsed.formats : [];
+    const selected = selectPreferredAudioFormat(formats);
+    if (!selected) {
+      throw new Error('No audio format was returned by yt-dlp');
+    }
+
+    const fragmentUrls = (selected.fragments ?? []).map((f) => f?.url).filter((u): u is string => !!u);
+    if (fragmentUrls.length === 0) {
+      throw new Error('No audio format with fragment list was returned by yt-dlp');
+    }
+
+    const totalDuration =
+      (typeof parsed.duration === 'number' && Number.isFinite(parsed.duration) ? parsed.duration : undefined) ??
+      (typeof selected.duration === 'number' && Number.isFinite(selected.duration) ? selected.duration : undefined);
+    const urlFragmentDuration = parseFragmentDurationFromUrl(fragmentUrls[0]);
+    const averageFragmentDuration =
+      totalDuration && fragmentUrls.length > 0 ? totalDuration / fragmentUrls.length : undefined;
+    const fragmentDurationSeconds = urlFragmentDuration ?? averageFragmentDuration ?? 5;
+
+    return {
+      duration: totalDuration,
+      formatId: selected.format_id ?? 'unknown',
+      ext: selected.ext ?? 'm4a',
+      fragmentUrls,
+      fragmentDurationSeconds,
+    };
+  };
+
+  const tryAttempt = async (useCookies: boolean, attemptLabel: string): Promise<YouTubeAudioFragmentsResult> => {
+    const args = buildArgs(useCookies);
+    log.info('Extracting YouTube fragment metadata for targeted section download', {
+      url,
+      attempt: attemptLabel,
+      usedCookies: useCookies,
+      command: `${ytdlpPath} ${args.join(' ')}`,
+    });
+    const { stdout, stderr } = await runCommandWithCapture(ytdlpPath, args, 'yt-dlp fragment metadata extraction');
+    if (stderr.trim()) {
+      log.debug('yt-dlp fragment metadata stderr', { attempt: attemptLabel, stderr: stderr.trim() });
+    }
+    return parseJson(stdout);
+  };
+
+  try {
+    try {
+      return await tryAttempt(hasCookies, hasCookies ? 'with_cookies' : 'without_cookies');
+    } catch (cookieError) {
+      if (!hasCookies) throw cookieError;
+      log.warn('Retrying fragment metadata extraction without cookies after cookie-enabled attempt failed', {
+        firstError: cookieError instanceof Error ? cookieError.message : String(cookieError),
+      });
+      return await tryAttempt(false, 'without_cookies_retry');
+    }
+  } finally {
+    cleanupCookiesFile(cookiesFilePath, cleaned);
+  }
+}
+
+async function downloadYouTubeSectionFromFragments(
+  ytdlpPath: string,
+  url: YouTubeUrl,
+  outputFilePath: string,
+  cancelToken: CancelToken,
+  updateProgressCallback: (progress: number) => void,
+  realtimeDB: Database,
+  startTime: number,
+  duration: number | undefined,
+  ctx?: LogContext
+): Promise<string> {
+  const log = createLoggerWithContext(ctx);
+  const isDevelopment = process.env.NODE_ENV === 'development';
+  const ffmpegPath = getFFmpegPath();
+  const workDir = await mkdtemp(path.join(os.tmpdir(), 'yt-frag-'));
+
+  try {
+    const info = await getYouTubeAudioFragments(ytdlpPath, url, realtimeDB, isDevelopment, log);
+    const fragmentCount = info.fragmentUrls.length;
+    const fragmentDuration = info.fragmentDurationSeconds;
+    const requestedEndForBoundedDownload = duration !== undefined ? startTime + duration : undefined;
+    const safetyPaddingFragments = 2;
+    const firstIndex = Math.max(0, Math.floor(startTime / fragmentDuration) - safetyPaddingFragments);
+    const lastIndex =
+      duration !== undefined
+        ? Math.min(
+            fragmentCount - 1,
+            Math.ceil((requestedEndForBoundedDownload as number) / fragmentDuration) + safetyPaddingFragments
+          )
+        : fragmentCount - 1;
+
+    if (firstIndex > lastIndex) {
+      throw new Error(
+        `Invalid fragment window for requested range: firstIndex=${firstIndex}, lastIndex=${lastIndex}, startTime=${startTime}, duration=${duration}`
+      );
+    }
+
+    log.info('Using targeted YouTube fragment window download', {
+      url,
+      startTime,
+      duration,
+      fragmentCount,
+      fragmentDurationSeconds: fragmentDuration,
+      selectedFirstIndex: firstIndex,
+      selectedLastIndex: lastIndex,
+      selectedFragmentTotal: lastIndex - firstIndex + 1,
+      formatId: info.formatId,
+      ext: info.ext,
+    });
+
+    const fragmentFiles: string[] = [];
+    const totalSelected = lastIndex - firstIndex + 1;
+    for (let index = firstIndex; index <= lastIndex; index += 1) {
+      if (cancelToken.isCancellationRequested) {
+        throw new Error('Targeted fragment download cancelled');
+      }
+      const fragmentUrl = info.fragmentUrls[index];
+      const outputName = `frag-${String(index).padStart(6, '0')}.m4a`;
+      const outputPath = path.join(workDir, outputName);
+
+      const response = await fetch(fragmentUrl, {
+        headers: {
+          'User-Agent': YTDLP_HTTP_USER_AGENT,
+          Accept: '*/*',
+        },
+      });
+      if (!response.ok) {
+        throw new Error(`Failed to download fragment sq=${index}. HTTP ${response.status} ${response.statusText}`);
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      await writeFile(outputPath, bytes);
+      fragmentFiles.push(outputPath);
+
+      const completed = index - firstIndex + 1;
+      updateProgressCallback(Math.min(95, Math.round((completed / totalSelected) * 95)));
+    }
+
+    const fragmentWindowStart = firstIndex * fragmentDuration;
+    const localStart = Math.max(0, startTime - fragmentWindowStart);
+    const finalOutputPath = `${outputFilePath}.m4a`;
+
+    const ffmpegArgs = ['-y'];
+    for (const fragmentFile of fragmentFiles) {
+      ffmpegArgs.push('-i', fragmentFile);
+    }
+
+    // Concatenate downloaded audio fragments in decode domain (stable PTS), then trim precisely.
+    const concatFilterInputs = fragmentFiles.map((_, i) => `[${i}:a]`).join('');
+    const concatFilter = `${concatFilterInputs}concat=n=${fragmentFiles.length}:v=0:a=1[a]`;
+    ffmpegArgs.push('-filter_complex', concatFilter, '-map', '[a]', '-ss', localStart.toFixed(3));
+    if (duration !== undefined) {
+      ffmpegArgs.push('-t', duration.toFixed(3));
+    }
+    ffmpegArgs.push('-vn', '-c:a', 'aac', '-b:a', '128k', finalOutputPath);
+    await runCommandWithCapture(ffmpegPath, ffmpegArgs, 'ffmpeg fragment concat trim');
+
+    let finalDuration = 0;
+    try {
+      const probe = await runCommandWithCapture(
+        'ffprobe',
+        ['-v', 'error', '-show_entries', 'format=duration', '-of', 'default=nokey=1:noprint_wrappers=1', finalOutputPath],
+        'ffprobe final fragment section'
+      );
+      const parsed = Number.parseFloat(probe.stdout.trim());
+      finalDuration = Number.isFinite(parsed) ? parsed : 0;
+    } catch (probeError) {
+      throw new Error(
+        `Failed to verify targeted fragment output duration: ${
+          probeError instanceof Error ? probeError.message : String(probeError)
+        }`
+      );
+    }
+
+    if (finalDuration < 1) {
+      throw new Error(`Targeted fragment output duration is too small (${finalDuration.toFixed(3)}s)`);
+    }
+    if (duration !== undefined && Math.abs(finalDuration - duration) > 3) {
+      throw new Error(
+        `Targeted fragment output duration mismatch. expected~${duration.toFixed(3)}s actual=${finalDuration.toFixed(3)}s`
+      );
+    }
+
+    updateProgressCallback(100);
+    log.info('Targeted fragment section download completed', {
+      finalOutputPath,
+      fragmentWindowStart,
+      localStart,
+      duration,
+      finalDuration,
+      selectedFragmentTotal: totalSelected,
+    });
+    return finalOutputPath;
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 /**
- * Downloads only the needed section from YouTube using yt-dlp.
- * Uses --download-sections with stream copy (-c copy) for efficiency.
- * Does NOT transcode - our ffmpeg will handle transcoding and filtering.
- * This avoids the ffmpeg exit code 251 issue when combining --download-sections with -x.
+ * Downloads only the needed section from YouTube.
+ * Strategy order:
+ * 1) Targeted fragment-window download + precise local trim (preferred for live DVR manifests)
+ * 2) Fallback to yt-dlp --download-sections --force-keyframes-at-cuts
  *
  * @returns Path to the downloaded section file (original format, not MP3)
  */
@@ -478,6 +906,27 @@ export const downloadYouTubeSection = async (
 ): Promise<string> => {
   const log = createLoggerWithContext(ctx);
   const isDevelopment = process.env.NODE_ENV === 'development';
+
+  // Preferred strategy for post-live DVR manifests: download only the required fragment window,
+  // then do a precise local trim. This avoids ffmpeg seeking the full DASH master manifest.
+  try {
+    return await downloadYouTubeSectionFromFragments(
+      ytdlpPath,
+      url,
+      outputFilePath,
+      cancelToken,
+      updateProgressCallback,
+      realtimeDB,
+      startTime,
+      duration,
+      ctx
+    );
+  } catch (fragmentError) {
+    log.warn('Targeted fragment strategy failed; falling back to yt-dlp --download-sections', {
+      error: fragmentError instanceof Error ? fragmentError.message : String(fragmentError),
+      fallback: 'yt-dlp --download-sections --force-keyframes-at-cuts',
+    });
+  }
 
   log.info('Downloading YouTube section with precise cuts', {
     url,
