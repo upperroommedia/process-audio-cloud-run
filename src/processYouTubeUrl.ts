@@ -507,7 +507,7 @@ export const downloadYouTubeSection = async (
   // - Downloads only the section we need (efficient bandwidth)
   // - Gets EXACT cuts at requested start/end times (no extra content)
   // - yt-dlp handles re-encoding for precise cuts; our ffmpeg applies filters
-  const args = [
+  const baseArgs = [
     '-f',
     'bestaudio/best', // Get best audio format
     '-N',
@@ -523,167 +523,250 @@ export const downloadYouTubeSection = async (
   // yt-dlp needs ffmpeg for --download-sections and --force-keyframes-at-cuts
   const ffmpegPath = getFFmpegPath();
   const ffmpegDir = path.dirname(ffmpegPath);
-  args.push('--ffmpeg-location', ffmpegDir);
-  args.push('--verbose'); // Add verbose logging to see ffmpeg commands and detailed errors
+  baseArgs.push('--ffmpeg-location', ffmpegDir);
+  baseArgs.push('--verbose'); // Add verbose logging to see ffmpeg commands and detailed errors
 
   // yt-dlp now expects an external JS runtime for full YouTube support.
   // We use Node.js since it's already installed in our container.
   // Clear default (deno) first, then enable node.
-  args.push('--no-js-runtimes', '--js-runtimes', 'node');
+  baseArgs.push('--no-js-runtimes', '--js-runtimes', 'node');
   log.debug('Using Node.js as JavaScript runtime for yt-dlp');
 
-  // Add cookies
+  // Add cookies for primary attempt (when available)
   const { args: cookieArgs, cookiesFilePath } = await prepareCookiesArgs(realtimeDB, isDevelopment, log);
-  args.push(...cookieArgs);
-  applyCookieSafeYouTubeExtractorArgs(args, cookieArgs.length > 0, log);
+  const hasCookies = cookieArgs.length > 0;
 
-  args.push(url);
+  const buildAttemptArgs = (useCookies: boolean): string[] => {
+    const args = [...baseArgs];
+    if (useCookies) {
+      args.push(...cookieArgs);
+      applyCookieSafeYouTubeExtractorArgs(args, true, log);
+    }
+    args.push(url);
+    return args;
+  };
 
-  const command = `${ytdlpPath} ${args.join(' ')}`;
-  log.info('Executing yt-dlp section download with precise cuts', {
-    command,
-    sectionRange,
-    outputFilePath,
-    note: 'Using --force-keyframes-at-cuts for frame-accurate cuts at exact start/end times',
-  });
+  const runSectionDownloadAttempt = async (
+    attemptArgs: string[],
+    attemptUsesCookies: boolean,
+    attemptLabel: string
+  ): Promise<string> =>
+    new Promise<string>((resolve, reject) => {
+      let previousPercent = -1;
+      let stderrBuffer = '';
+      let settled = false;
 
-  const cleaned = { done: false };
+      const rejectOnce = (error: Error): void => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
 
-  return new Promise<string>((resolve, reject) => {
-    let previousPercent = -1;
+      const resolveOnce = (filePath: string): void => {
+        if (settled) return;
+        settled = true;
+        resolve(filePath);
+      };
 
-    const ytdlp = spawn(ytdlpPath, args);
+      const command = `${ytdlpPath} ${attemptArgs.join(' ')}`;
+      log.info('Executing yt-dlp section download with precise cuts', {
+        command,
+        sectionRange,
+        outputFilePath,
+        attempt: attemptLabel,
+        usedCookies: attemptUsesCookies,
+        note: 'Using --force-keyframes-at-cuts for frame-accurate cuts at exact start/end times',
+      });
 
-    ytdlp.on('error', (err) => {
-      log.error('yt-dlp spawn error', { error: err });
-      cleanupCookiesFile(cookiesFilePath, cleaned);
-      reject(new Error(`yt-dlp spawn error: ${err}`));
-    });
+      const ytdlp = spawn(ytdlpPath, attemptArgs);
 
-    ytdlp.on('close', (code, signal) => {
-      cleanupCookiesFile(cookiesFilePath, cleaned);
-      const dir = path.dirname(outputFilePath);
-      const baseName = path.basename(outputFilePath);
-      let files: string[] = [];
-      try {
-        files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
-      } catch (err) {
-        // Ignore readdir errors
-      }
+      ytdlp.on('error', (err) => {
+        log.error('yt-dlp spawn error', { error: err, attempt: attemptLabel, usedCookies: attemptUsesCookies });
+        rejectOnce(new Error(`yt-dlp spawn error: ${err}`));
+      });
 
-      if (code === 0) {
-        // yt-dlp adds extension based on format, so find the actual file
-        // The output template was `${outputFilePath}.%(ext)s`, so yt-dlp will create a file
-        // with the base name plus the actual extension (e.g., .webm, .m4a)
-        const actualFile = files.find((f) => {
-          const fileBase = path.basename(f, path.extname(f));
-          return fileBase === baseName || f.startsWith(baseName);
-        });
+      ytdlp.on('close', (code, signal) => {
+        if (settled) return;
+        const dir = path.dirname(outputFilePath);
+        const baseName = path.basename(outputFilePath);
+        let files: string[] = [];
+        try {
+          files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+        } catch {
+          // Ignore readdir errors
+        }
 
-        if (actualFile) {
-          const actualPath = path.join(dir, actualFile);
-          log.info('yt-dlp section download completed with precise cuts', {
-            outputFilePath: actualPath,
-            format: path.extname(actualFile),
-            requestedStart: startTime,
-            requestedDuration: duration,
-            note: 'File contains EXACT time range - no additional seeking needed',
+        if (code === 0) {
+          // yt-dlp adds extension based on format, so find the actual file
+          // The output template was `${outputFilePath}.%(ext)s`, so yt-dlp will create a file
+          // with the base name plus the actual extension (e.g., .webm, .m4a)
+          const actualFile = files.find((f) => {
+            const fileBase = path.basename(f, path.extname(f));
+            return fileBase === baseName || f.startsWith(baseName);
           });
-          resolve(actualPath);
-        } else {
-          // Fallback: check if file exists without extension
-          if (fs.existsSync(outputFilePath)) {
-            log.info('yt-dlp section download completed successfully', { outputFilePath });
-            resolve(outputFilePath);
+
+          if (actualFile) {
+            const actualPath = path.join(dir, actualFile);
+            log.info('yt-dlp section download completed with precise cuts', {
+              outputFilePath: actualPath,
+              format: path.extname(actualFile),
+              requestedStart: startTime,
+              requestedDuration: duration,
+              attempt: attemptLabel,
+              usedCookies: attemptUsesCookies,
+              note: 'File contains EXACT time range - no additional seeking needed',
+            });
+            resolveOnce(actualPath);
           } else {
-            reject(new Error(`Output file was not created. Expected file starting with: ${baseName}`));
+            // Fallback: check if file exists without extension
+            if (fs.existsSync(outputFilePath)) {
+              log.info('yt-dlp section download completed successfully', {
+                outputFilePath,
+                attempt: attemptLabel,
+                usedCookies: attemptUsesCookies,
+              });
+              resolveOnce(outputFilePath);
+            } else {
+              rejectOnce(new Error(`Output file was not created. Expected file starting with: ${baseName}`));
+            }
+          }
+        } else {
+          log.error('yt-dlp exited with error code', {
+            code,
+            signal,
+            attempt: attemptLabel,
+            usedCookies: attemptUsesCookies,
+            stderr: stderrBuffer,
+          });
+          rejectOnce(
+            new Error(
+              `yt-dlp exited with code ${code}${signal ? ` (signal: ${signal})` : ''} on ${attemptLabel}. stderr: ${stderrBuffer}`
+            )
+          );
+        }
+      });
+
+      ytdlp.stderr?.on('data', (data) => {
+        if (cancelToken.isCancellationRequested) {
+          ytdlp.kill('SIGTERM');
+          rejectOnce(new Error('Download operation was cancelled'));
+          return;
+        }
+
+        const stderrStr = data.toString();
+        if (stderrBuffer.length < 50_000) {
+          stderrBuffer += stderrStr;
+        }
+
+        // If ffmpeg inside yt-dlp fails DNS resolution, probe DNS from Node to isolate root cause
+        if (stderrStr.includes('Failed to resolve hostname')) {
+          const hostMatch = stderrStr.match(/Failed to resolve hostname\s+([^\s:]+)\s*:/);
+          const failedHost = hostMatch?.[1];
+          if (failedHost) {
+            dns
+              .lookup(failedHost)
+              .then((result) => {
+                log.info('Node DNS resolved hostname that ffmpeg could not', {
+                  hostname: failedHost,
+                  address: result.address,
+                  family: result.family,
+                  attempt: attemptLabel,
+                  usedCookies: attemptUsesCookies,
+                });
+              })
+              .catch((err) => {
+                log.error('Node DNS also failed for hostname', {
+                  hostname: failedHost,
+                  error: err instanceof Error ? err.message : String(err),
+                  attempt: attemptLabel,
+                  usedCookies: attemptUsesCookies,
+                });
+              });
           }
         }
-      } else {
-        log.error('yt-dlp exited with error code', { code, signal });
-        reject(
-          new Error(`yt-dlp exited with code ${code}${signal ? ` (signal: ${signal})` : ''}. Check logs for details.`)
+
+        // Log ffmpeg command line when yt-dlp shows it (for --download-sections)
+        if (stderrStr.includes('ffmpeg command line:')) {
+          const ffmpegCmdMatch = stderrStr.match(/ffmpeg command line: (.+)/);
+          if (ffmpegCmdMatch) {
+            const ffmpegCmd = ffmpegCmdMatch[1];
+            log.info('yt-dlp ffmpeg command detected', {
+              command: ffmpegCmd,
+              attempt: attemptLabel,
+              usedCookies: attemptUsesCookies,
+            });
+          }
+        }
+
+        // Parse progress - handle both yt-dlp percentage format AND ffmpeg time format
+        // For --download-sections, ffmpeg reports time=HH:MM:SS.ms instead of percentage
+        let percent: number | null = null;
+
+        // Try ffmpeg time format first (used with --download-sections)
+        const ffmpegTime = extractFfmpegTime(stderrStr);
+        if (ffmpegTime !== null && ffmpegTime >= 0 && duration) {
+          // Calculate percentage based on time and requested duration
+          percent = Math.min(100, (ffmpegTime / duration) * 100);
+        } else if (stderrStr.includes('download')) {
+          // Fallback to yt-dlp percentage format (used for regular downloads)
+          percent = extractPercent(stderrStr);
+        }
+
+        if (percent !== null) {
+          const percentInt = Math.floor(percent);
+          if (percentInt !== previousPercent) {
+            previousPercent = percentInt;
+            updateProgressCallback(percent);
+          }
+        }
+
+        // Check for errors - capture detailed error info
+        if (stderrStr.includes('ERROR')) {
+          const errorLower = stderrStr.toLowerCase();
+          const isFatalError =
+            errorLower.includes('aborting') ||
+            errorLower.includes('failed') ||
+            errorLower.includes('cannot') ||
+            (errorLower.includes('ffmpeg exited') && !errorLower.includes('code 0'));
+
+          if (isFatalError) {
+            log.error('yt-dlp fatal error detected', {
+              stderr: stderrStr.trim(),
+              attempt: attemptLabel,
+              usedCookies: attemptUsesCookies,
+            });
+            rejectOnce(new Error(`yt-dlp error (${attemptLabel}): ${stderrStr.trim()}`));
+          }
+        }
+      });
+    });
+
+  const cleaned = { done: false };
+  try {
+    const cookieAttemptLabel = hasCookies ? 'with_cookies' : 'without_cookies';
+    try {
+      return await runSectionDownloadAttempt(buildAttemptArgs(hasCookies), hasCookies, cookieAttemptLabel);
+    } catch (cookieAttemptError) {
+      if (!hasCookies) {
+        throw cookieAttemptError;
+      }
+
+      log.warn('Retrying yt-dlp section download without cookies after cookie-enabled attempt failed', {
+        firstError: cookieAttemptError instanceof Error ? cookieAttemptError.message : String(cookieAttemptError),
+      });
+
+      try {
+        return await runSectionDownloadAttempt(buildAttemptArgs(false), false, 'without_cookies_retry');
+      } catch (noCookieRetryError) {
+        const firstError =
+          cookieAttemptError instanceof Error ? cookieAttemptError.message : String(cookieAttemptError);
+        const retryError = noCookieRetryError instanceof Error ? noCookieRetryError.message : String(noCookieRetryError);
+        throw new Error(
+          `yt-dlp section download failed with cookies and without cookies. with-cookies error: ${firstError}; no-cookies retry error: ${retryError}`
         );
       }
-    });
-
-    ytdlp.stderr?.on('data', (data) => {
-      if (cancelToken.isCancellationRequested) {
-        ytdlp.kill('SIGTERM');
-        reject(new Error('Download operation was cancelled'));
-        return;
-      }
-
-      const stderrStr = data.toString();
-
-      // If ffmpeg inside yt-dlp fails DNS resolution, probe DNS from Node to isolate root cause
-      if (stderrStr.includes('Failed to resolve hostname')) {
-        const hostMatch = stderrStr.match(/Failed to resolve hostname\s+([^\s:]+)\s*:/);
-        const failedHost = hostMatch?.[1];
-        if (failedHost) {
-          dns
-            .lookup(failedHost)
-            .then((result) => {
-              log.info('Node DNS resolved hostname that ffmpeg could not', {
-                hostname: failedHost,
-                address: result.address,
-                family: result.family,
-              });
-            })
-            .catch((err) => {
-              log.error('Node DNS also failed for hostname', {
-                hostname: failedHost,
-                error: err instanceof Error ? err.message : String(err),
-              });
-            });
-        }
-      }
-
-      // Log ffmpeg command line when yt-dlp shows it (for --download-sections)
-      if (stderrStr.includes('ffmpeg command line:')) {
-        const ffmpegCmdMatch = stderrStr.match(/ffmpeg command line: (.+)/);
-        if (ffmpegCmdMatch) {
-          const ffmpegCmd = ffmpegCmdMatch[1];
-          log.info('yt-dlp ffmpeg command detected', { command: ffmpegCmd });
-        }
-      }
-
-      // Parse progress - handle both yt-dlp percentage format AND ffmpeg time format
-      // For --download-sections, ffmpeg reports time=HH:MM:SS.ms instead of percentage
-      let percent: number | null = null;
-
-      // Try ffmpeg time format first (used with --download-sections)
-      const ffmpegTime = extractFfmpegTime(stderrStr);
-      if (ffmpegTime !== null && ffmpegTime >= 0 && duration) {
-        // Calculate percentage based on time and requested duration
-        percent = Math.min(100, (ffmpegTime / duration) * 100);
-      } else if (stderrStr.includes('download')) {
-        // Fallback to yt-dlp percentage format (used for regular downloads)
-        percent = extractPercent(stderrStr);
-      }
-
-      if (percent !== null) {
-        const percentInt = Math.floor(percent);
-        if (percentInt !== previousPercent) {
-          previousPercent = percentInt;
-          updateProgressCallback(percent);
-        }
-      }
-
-      // Check for errors - capture detailed error info
-      if (stderrStr.includes('ERROR')) {
-        const errorLower = stderrStr.toLowerCase();
-        const isFatalError =
-          errorLower.includes('aborting') ||
-          errorLower.includes('failed') ||
-          errorLower.includes('cannot') ||
-          (errorLower.includes('ffmpeg exited') && !errorLower.includes('code 0'));
-
-        if (isFatalError) {
-          log.error('yt-dlp fatal error detected', { stderr: stderrStr.trim() });
-          reject(new Error(`yt-dlp error: ${stderrStr.trim()}`));
-        }
-      }
-    });
-  });
+    }
+  } finally {
+    cleanupCookiesFile(cookiesFilePath, cleaned);
+  }
 };
