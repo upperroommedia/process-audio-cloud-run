@@ -1,0 +1,27 @@
+name: Enforce Main PR Source Branch
+
+on:
+  pull_request:
+    branches:
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - edited
+      - ready_for_review
+
+jobs:
+  validate-source-branch:
+    name: main-pr-must-come-from-staging
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure PR head branch is staging
+        run: |
+          echo "PR base branch: ${{ github.base_ref }}"
+          echo "PR head branch: ${{ github.head_ref }}"
+
+          if [ "${{ github.head_ref }}" != "staging" ]; then
+            echo "::error::Only pull requests from 'staging' into 'main' are allowed."
+            exit 1
+          fi
