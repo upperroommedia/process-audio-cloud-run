@@ -11,14 +11,33 @@ const resolveFirebaseProjectId = (): string =>
   process.env.PROJECT_ID ||
   DEFAULT_FIREBASE_PROJECT_ID;
 
-const resolveStorageBucket = (projectId: string): string => process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.appspot.com`;
+type FirebaseConfigEnv = {
+  projectId?: string;
+  storageBucket?: string;
+  databaseURL?: string;
+};
+
+const parseFirebaseConfigEnv = (): FirebaseConfigEnv | null => {
+  const raw = process.env.FIREBASE_CONFIG;
+  if (!raw || !raw.trim().startsWith('{')) return null;
+  try {
+    return JSON.parse(raw) as FirebaseConfigEnv;
+  } catch {
+    return null;
+  }
+};
+
+const getFirebaseConfigFromEnv = (): FirebaseConfigEnv => parseFirebaseConfigEnv() ?? {};
+
+const resolveStorageBucket = (projectId: string): string =>
+  process.env.FIREBASE_STORAGE_BUCKET || getFirebaseConfigFromEnv().storageBucket || `${projectId}.appspot.com`;
 
 const resolveDatabaseUrl = (projectId: string): string => {
   const databaseInstance = process.env.FIREBASE_DATABASE_INSTANCE || `${projectId}-default-rtdb`;
   if (isDevelopment && process.env.FIREBASE_DATABASE_EMULATOR_HOST) {
     return `http://${process.env.FIREBASE_DATABASE_EMULATOR_HOST}?ns=${databaseInstance}`;
   }
-  return process.env.FIREBASE_DATABASE_URL || `https://${databaseInstance}.firebaseio.com/`;
+  return process.env.FIREBASE_DATABASE_URL || getFirebaseConfigFromEnv().databaseURL || `https://${databaseInstance}.firebaseio.com/`;
 };
 
 if (!firebaseAdmin.apps.length) {

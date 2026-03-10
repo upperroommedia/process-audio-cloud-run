@@ -54,6 +54,6 @@ jobs:
             --memory=4Gi \
             --timeout=1800 \
             --port=8080 \
-            --set-env-vars="NODE_ENV=production,FIREBASE_PROJECT_ID=urm-app-staging,FIREBASE_STORAGE_BUCKET=urm-app-staging.appspot.com,FIREBASE_DATABASE_URL=https://urm-app-staging-815ca.firebaseio.com/" \
+            --set-env-vars="NODE_ENV=production,FIREBASE_PROJECT_ID=urm-app-staging,FIREBASE_STORAGE_BUCKET=urm-app-staging.firebasestorage.app,FIREBASE_DATABASE_URL=https://urm-app-staging-default-rtdb.firebaseio.com/" \
             --min-instances=1 \
             --max-instances=10
