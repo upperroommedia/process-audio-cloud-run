@@ -11,13 +11,13 @@ steps:
         '--build-arg',
         'CACHEBUST=${COMMIT_SHA}', # force latest yt-dlp layer
         '-t',
-        'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
+        '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:${COMMIT_SHA}',
         '.',
       ]
 
   # Step 2: Push Docker image to Artifact Registry
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}']
+    args: ['push', '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:${COMMIT_SHA}']
 
   # Step 3: Deploy to Cloud Run (private service)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -26,11 +26,13 @@ steps:
       [
         'run',
         'deploy',
-        'process-audio',
+        '${_SERVICE_NAME}',
+        '--project',
+        '${_PROJECT_ID}',
         '--image',
-        'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}',
+        '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:${COMMIT_SHA}',
         '--region',
-        'us-central1',
+        '${_REGION}',
         '--platform',
         'managed',
         '--cpu',
@@ -43,7 +45,19 @@ steps:
         '1',
         '--max-instances',
         '10',
+        '--set-env-vars',
+        'NODE_ENV=production,FIREBASE_PROJECT_ID=${_FIREBASE_PROJECT_ID},FIREBASE_STORAGE_BUCKET=${_FIREBASE_STORAGE_BUCKET},FIREBASE_DATABASE_URL=${_FIREBASE_DATABASE_URL}',
       ]
 
 images:
-  - 'us-central1-docker.pkg.dev/urm-app/process-audio-repo/process-audio:${COMMIT_SHA}'
+  - '${_REGION}-docker.pkg.dev/${_PROJECT_ID}/${_AR_REPO}/${_IMAGE_NAME}:${COMMIT_SHA}'
+
+substitutions:
+  _PROJECT_ID: 'urm-app'
+  _REGION: 'us-central1'
+  _AR_REPO: 'process-audio-repo'
+  _IMAGE_NAME: 'process-audio'
+  _SERVICE_NAME: 'process-audio'
+  _FIREBASE_PROJECT_ID: 'urm-app'
+  _FIREBASE_STORAGE_BUCKET: 'urm-app.appspot.com'
+  _FIREBASE_DATABASE_URL: 'https://urm-app-default-rtdb.firebaseio.com/'

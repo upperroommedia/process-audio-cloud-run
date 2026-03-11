@@ -2,8 +2,29 @@ import firebaseAdmin from 'firebase-admin';
 import { applicationDefault } from 'firebase-admin/app';
 import logger from './WinstonLogger';
 const isDevelopment = process.env.NODE_ENV === 'development';
+const DEFAULT_FIREBASE_PROJECT_ID = 'urm-app';
+
+const resolveFirebaseProjectId = (): string =>
+  process.env.FIREBASE_PROJECT_ID ||
+  process.env.GOOGLE_CLOUD_PROJECT ||
+  process.env.GCLOUD_PROJECT ||
+  process.env.PROJECT_ID ||
+  DEFAULT_FIREBASE_PROJECT_ID;
+
+const resolveStorageBucket = (projectId: string): string => process.env.FIREBASE_STORAGE_BUCKET || `${projectId}.appspot.com`;
+
+const resolveDatabaseUrl = (projectId: string): string => {
+  const databaseInstance = process.env.FIREBASE_DATABASE_INSTANCE || `${projectId}-default-rtdb`;
+  if (isDevelopment && process.env.FIREBASE_DATABASE_EMULATOR_HOST) {
+    return `http://${process.env.FIREBASE_DATABASE_EMULATOR_HOST}?ns=${databaseInstance}`;
+  }
+  return process.env.FIREBASE_DATABASE_URL || `https://${databaseInstance}.firebaseio.com/`;
+};
 
 if (!firebaseAdmin.apps.length) {
+  const firebaseProjectId = resolveFirebaseProjectId();
+  const storageBucket = resolveStorageBucket(firebaseProjectId);
+
   if (isDevelopment) {
     logger.info('Setting Admin SDK to use emulator');
     // Use environment variables if set, otherwise default to localhost
@@ -44,20 +65,18 @@ if (!firebaseAdmin.apps.length) {
       },
     });
   } else {
-    logger.info('Using production Firebase services', {
-      storageBucket: 'urm-app.appspot.com',
-      databaseURL: 'https://urm-app-default-rtdb.firebaseio.com/',
+    logger.info('Using non-emulator Firebase services', {
+      firebaseProjectId,
+      storageBucket,
+      databaseURL: process.env.FIREBASE_DATABASE_URL || '(derived from project)',
     });
   }
 
   // Configure databaseURL for emulator or production
-  const databaseURL =
-    isDevelopment && process.env.FIREBASE_DATABASE_EMULATOR_HOST
-      ? `http://${process.env.FIREBASE_DATABASE_EMULATOR_HOST}?ns=urm-app-default-rtdb`
-      : 'https://urm-app-default-rtdb.firebaseio.com/';
+  const databaseURL = resolveDatabaseUrl(firebaseProjectId);
 
   if (isDevelopment) {
-    logger.info('Database URL configured', { databaseURL });
+    logger.info('Database URL configured', { firebaseProjectId, storageBucket, databaseURL });
   }
 
   // In development with emulators, we don't need real credentials
@@ -68,8 +87,8 @@ if (!firebaseAdmin.apps.length) {
     databaseURL: string;
     credential?: ReturnType<typeof applicationDefault>;
   } = {
-    projectId: 'urm-app', // Required for emulators to work properly
-    storageBucket: 'urm-app.appspot.com',
+    projectId: firebaseProjectId, // Required for emulators to work properly
+    storageBucket,
     databaseURL,
   };
 
