@@ -22,6 +22,7 @@ jobs:
       AR_REPO: process-audio-repo
       IMAGE_NAME: process-audio
       SERVICE_NAME: process-audio-staging
+      FIREBASE_DATABASE_URL: https://urm-app-staging-default-rtdb.firebaseio.com/
 
     steps:
       - uses: actions/checkout@v4
@@ -54,6 +55,6 @@ jobs:
             --memory=4Gi \
             --timeout=1800 \
             --port=8080 \
-            --set-env-vars="NODE_ENV=production,FIREBASE_PROJECT_ID=urm-app-staging,FIREBASE_STORAGE_BUCKET=urm-app-staging.firebasestorage.app,FIREBASE_DATABASE_URL=https://urm-app-staging-default-rtdb.firebaseio.com/" \
+            --set-env-vars="NODE_ENV=production,FIREBASE_PROJECT_ID=urm-app-staging,FIREBASE_STORAGE_BUCKET=urm-app-staging.firebasestorage.app,FIREBASE_DATABASE_URL=${FIREBASE_DATABASE_URL}" \
             --min-instances=1 \
             --max-instances=10
