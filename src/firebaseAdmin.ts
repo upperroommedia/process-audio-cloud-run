@@ -3,10 +3,6 @@ import { applicationDefault } from 'firebase-admin/app';
 import logger from './WinstonLogger';
 const isDevelopment = process.env.NODE_ENV === 'development';
 const DEFAULT_FIREBASE_PROJECT_ID = 'urm-app';
-const FIREBASE_DATABASE_URL_BY_PROJECT_ID: Record<string, string> = {
-  'urm-app': 'https://urm-app-default-rtdb.firebaseio.com/',
-  'urm-app-staging': 'https://urm-app-staging-815ca.firebaseio.com/',
-};
 
 const resolveFirebaseProjectId = (): string =>
   process.env.FIREBASE_PROJECT_ID ||
@@ -41,12 +37,7 @@ const resolveDatabaseUrl = (projectId: string): string => {
   if (isDevelopment && process.env.FIREBASE_DATABASE_EMULATOR_HOST) {
     return `http://${process.env.FIREBASE_DATABASE_EMULATOR_HOST}?ns=${databaseInstance}`;
   }
-  return (
-    process.env.FIREBASE_DATABASE_URL ||
-    getFirebaseConfigFromEnv().databaseURL ||
-    FIREBASE_DATABASE_URL_BY_PROJECT_ID[projectId] ||
-    `https://${databaseInstance}.firebaseio.com/`
-  );
+  return process.env.FIREBASE_DATABASE_URL || getFirebaseConfigFromEnv().databaseURL || `https://${databaseInstance}.firebaseio.com/`;
 };
 
 if (!firebaseAdmin.apps.length) {
