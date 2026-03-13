@@ -27,9 +27,27 @@ const getRuntimeAlertRecipients = (): string[] => {
     process.env.RUNTIME_ALERT_EMAILS ||
     '';
 
-  return raw
-    .split(',')
-    .map((value) => value.trim().toLowerCase())
+  const normalized = raw.trim();
+  if (!normalized) {
+    return [];
+  }
+
+  if (normalized.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(normalized);
+      if (Array.isArray(parsed)) {
+        return parsed
+          .map((value) => (typeof value === 'string' ? value.trim().toLowerCase() : ''))
+          .filter(Boolean);
+      }
+    } catch {
+      // Fall through to delimiter-based parsing for malformed JSON.
+    }
+  }
+
+  return normalized
+    .split(/[,\n;]/)
+    .map((value) => value.trim().replace(/^['"]+|['"]+$/g, '').toLowerCase())
     .filter(Boolean);
 };
 

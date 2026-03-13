@@ -10,7 +10,8 @@
     "build": "pnpm tsc",
     "dev": "just dev",
     "verify:youtube:routing": "NODE_ENV=development node scripts/verify-youtube-routing.js",
-    "verify:youtube:policy": "node scripts/verify-youtube-policy.js"
+    "verify:youtube:policy": "node scripts/verify-youtube-policy.js",
+    "verify:alerts": "node scripts/verify-operational-alert-recipients.js"
   },
   "engines": {
     "node": ">=18.0.0"
