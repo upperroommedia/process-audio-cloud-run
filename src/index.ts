@@ -9,6 +9,7 @@ import { TIMEOUT_SECONDS } from './consts';
 import firebaseAdmin from './firebaseAdmin';
 import logger, { createLoggerWithContext } from './WinstonLogger';
 import { createContext } from './context';
+import { emitOperationalAlertEmail } from './operationalAlerts';
 
 const app = express();
 app.use(express.json());
@@ -145,6 +146,28 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
       errorType: e?.constructor?.name,
       stack: e instanceof Error ? e.stack : undefined,
     });
+
+    try {
+      await emitOperationalAlertEmail({
+        alertCode: 'PROCESS_AUDIO_RUNTIME_FAILURE',
+        summary: 'process-audio Cloud Run request failed while processing sermon audio.',
+        error: e,
+        sermonId: data?.id,
+        context: {
+          requestId: ctx.requestId,
+          operation: ctx.operation,
+          audioSourceType: audioSource.type,
+          audioSource: audioSource.source,
+          requesterEmail: request.auth?.email ?? null,
+          requesterUid: request.auth?.sub ?? null,
+          requesterName: request.auth?.name ?? null,
+        },
+      });
+    } catch (alertError) {
+      log.error('Failed to queue operational alert email', {
+        error: alertError instanceof Error ? alertError.message : String(alertError),
+      });
+    }
 
     try {
       await docRef.update({

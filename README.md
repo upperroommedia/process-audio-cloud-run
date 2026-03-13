@@ -69,6 +69,8 @@ process-audio
 
 ## Deploying to Google Cloud Run
 
+Set `PROCESS_AUDIO_ALERT_RECIPIENTS` on the service to a comma-separated list of alert recipients before deploying if you want runtime failures to queue email notifications.
+
 1. Build the Docker image:
 
 ```
