@@ -110,6 +110,17 @@ function parseFragmentDurationFromUrl(fragmentUrl: string | undefined): number |
   return value;
 }
 
+function annotateYtDlpAuthError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes('the page needs to be reloaded')) {
+    return `${message} The configured YouTube cookie session appears stale or challenged. Rotate the yt-dlp cookies from a fresh private browsing session and retry.`;
+  }
+  if (lower.includes('sign in to confirm you’re not a bot') || lower.includes("sign in to confirm you're not a bot")) {
+    return `${message} Verify that production is using fresh yt-dlp cookies and that YTDLP_POT_PROVIDER_BASE_URL points to a healthy PO-token provider.`;
+  }
+  return message;
+}
+
 async function runCommandWithCapture(
   command: string,
   args: string[],
@@ -134,11 +145,7 @@ async function runCommandWithCapture(
         resolve({ stdout, stderr });
         return;
       }
-      reject(
-        new Error(
-          `${errorPrefix} exited with code ${code}${signal ? ` (signal: ${signal})` : ''}. stderr: ${stderr.trim()}`
-        )
-      );
+      reject(new Error(annotateYtDlpAuthError(`${errorPrefix} exited with code ${code}${signal ? ` (signal: ${signal})` : ''}. stderr: ${stderr.trim()}`)));
     });
   });
 }
@@ -163,6 +170,7 @@ async function prepareCookiesArgs(
       args.push('--cookies-from-browser', 'chrome');
     }
   } else {
+    ensureProductionPoTokenProviderConfigured(isDevelopment);
     cookiesFilePath = path.join(os.tmpdir(), `yt-dlp-cookies-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
     const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
     const encodedCookies = await cookiesPath.get();
@@ -193,6 +201,29 @@ function cleanupCookiesFile(cookiesFilePath: string | undefined, cleaned: { done
 }
 
 const COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS = 'youtube:player_client=default,-web_creator';
+const POT_ENABLED_YOUTUBE_EXTRACTOR_ARGS = 'youtube:player_client=default,mweb,-web_creator';
+
+function getPoTokenProviderBaseUrl(): string | undefined {
+  const value = process.env.YTDLP_POT_PROVIDER_BASE_URL?.trim();
+  return value ? value.replace(/\/+$/, '') : undefined;
+}
+
+function shouldDisableInnertubeForPoTokenProvider(): boolean {
+  const value = process.env.YTDLP_POT_DISABLE_INNERTUBE?.trim()?.toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+function ensureProductionPoTokenProviderConfigured(isDevelopment: boolean): void {
+  if (isDevelopment) return;
+  if (getPoTokenProviderBaseUrl()) return;
+  throw new Error(
+    'YTDLP_POT_PROVIDER_BASE_URL is required for production YouTube downloads. Deploy a bgutil PO-token provider and set this env var before retrying.'
+  );
+}
+
+function shouldRetryWithoutCookies(isDevelopment: boolean): boolean {
+  return isDevelopment;
+}
 
 function applyCookieSafeYouTubeExtractorArgs(
   args: string[],
@@ -200,9 +231,29 @@ function applyCookieSafeYouTubeExtractorArgs(
   log: ReturnType<typeof createLoggerWithContext>
 ): void {
   if (!hasCookies) return;
-  args.push('--extractor-args', COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS);
-  log.debug('Applying yt-dlp extractor args for cookie-authenticated YouTube request', {
-    extractorArgs: COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS,
+
+  const providerBaseUrl = getPoTokenProviderBaseUrl();
+  if (!providerBaseUrl) {
+    args.push('--extractor-args', COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS);
+    log.debug('Applying yt-dlp extractor args for cookie-authenticated YouTube request without PO token provider', {
+      extractorArgs: COOKIE_SAFE_YOUTUBE_EXTRACTOR_ARGS,
+      poTokenProviderConfigured: false,
+    });
+    return;
+  }
+
+  args.push('--extractor-args', POT_ENABLED_YOUTUBE_EXTRACTOR_ARGS);
+
+  const providerArgs = [`base_url=${providerBaseUrl}`];
+  if (shouldDisableInnertubeForPoTokenProvider()) {
+    providerArgs.push('disable_innertube=1');
+  }
+  args.push('--extractor-args', `youtubepot-bgutilhttp:${providerArgs.join(';')}`);
+
+  log.info('Applying yt-dlp extractor args for cookie-authenticated YouTube request with PO token provider', {
+    youtubeExtractorArgs: POT_ENABLED_YOUTUBE_EXTRACTOR_ARGS,
+    poTokenProviderBaseUrl: providerBaseUrl,
+    poTokenProviderDisableInnertube: shouldDisableInnertubeForPoTokenProvider(),
   });
 }
 
@@ -318,7 +369,7 @@ export const getYouTubeTrimRoutingDecision = async (
     try {
       return await runAttempt(hasCookies, hasCookies ? 'with_cookies' : 'without_cookies');
     } catch (cookieError) {
-      if (!hasCookies) throw cookieError;
+      if (!hasCookies || !shouldRetryWithoutCookies(isDevelopment)) throw cookieError;
       log.warn('Retrying routing preflight without cookies after cookie-enabled attempt failed', {
         firstError: cookieError instanceof Error ? cookieError.message : String(cookieError),
       });
@@ -472,14 +523,14 @@ export const getYouTubeAudioUrl = async (
       attempt: attemptLabel,
       usedCookies: attemptUsesCookies,
     });
-    throw new Error(`yt-dlp exited with code ${result.code}: ${result.stderr}`);
+    throw new Error(annotateYtDlpAuthError(`yt-dlp exited with code ${result.code}: ${result.stderr}`));
   };
 
   try {
     try {
       return await runExtractionAttempt(args, usedCookies, usedCookies ? 'with_cookies' : 'without_cookies');
     } catch (cookieAttemptError) {
-      if (!usedCookies) {
+      if (!usedCookies || !shouldRetryWithoutCookies(isDevelopment)) {
         throw cookieAttemptError;
       }
 
@@ -737,7 +788,7 @@ async function getYouTubeAudioFragments(
     try {
       return await tryAttempt(hasCookies, hasCookies ? 'with_cookies' : 'without_cookies');
     } catch (cookieError) {
-      if (!hasCookies) throw cookieError;
+      if (!hasCookies || !shouldRetryWithoutCookies(isDevelopment)) throw cookieError;
       log.warn('Retrying fragment metadata extraction without cookies after cookie-enabled attempt failed', {
         firstError: cookieError instanceof Error ? cookieError.message : String(cookieError),
       });
@@ -1089,7 +1140,9 @@ export const downloadYouTubeSection = async (
           });
           rejectOnce(
             new Error(
-              `yt-dlp exited with code ${code}${signal ? ` (signal: ${signal})` : ''} on ${attemptLabel}. stderr: ${stderrBuffer}`
+              annotateYtDlpAuthError(
+                `yt-dlp exited with code ${code}${signal ? ` (signal: ${signal})` : ''} on ${attemptLabel}. stderr: ${stderrBuffer}`
+              )
             )
           );
         }
@@ -1184,7 +1237,7 @@ export const downloadYouTubeSection = async (
               attempt: attemptLabel,
               usedCookies: attemptUsesCookies,
             });
-            rejectOnce(new Error(`yt-dlp error (${attemptLabel}): ${stderrStr.trim()}`));
+            rejectOnce(new Error(annotateYtDlpAuthError(`yt-dlp error (${attemptLabel}): ${stderrStr.trim()}`)));
           }
         }
       });
@@ -1196,7 +1249,7 @@ export const downloadYouTubeSection = async (
     try {
       return await runSectionDownloadAttempt(buildAttemptArgs(hasCookies), hasCookies, cookieAttemptLabel);
     } catch (cookieAttemptError) {
-      if (!hasCookies) {
+      if (!hasCookies || !shouldRetryWithoutCookies(isDevelopment)) {
         throw cookieAttemptError;
       }
 

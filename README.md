@@ -71,6 +71,32 @@ process-audio
 
 Set `PROCESS_AUDIO_ALERT_RECIPIENTS` on the service to a comma-separated list of alert recipients before deploying if you want runtime failures to queue email notifications.
 
+YouTube downloads in Cloud Run now assume a separate bgutil PO-token provider service is available. Deploy that service first, then set `YTDLP_POT_PROVIDER_BASE_URL` on `process-audio` to the provider URL. This follows the current `yt-dlp` PO Token Guide for `mweb`/GVS token handling.
+
+Example provider deployment:
+
+```bash
+gcloud run deploy ytdlp-pot-provider \
+  --image docker.io/brainicism/bgutil-ytdlp-pot-provider \
+  --region us-central1 \
+  --allow-unauthenticated
+```
+
+Then deploy `process-audio` with the provider URL:
+
+```bash
+gcloud run deploy process-audio \
+  --image gcr.io/urm-app/process-audio \
+  --region us-central1 \
+  --min-instances 0 \
+  --cpu-throttling \
+  --set-env-vars YTDLP_POT_PROVIDER_BASE_URL=https://ytdlp-pot-provider-<hash>-uc.a.run.app
+```
+
+Optional:
+
+- Set `YTDLP_POT_DISABLE_INNERTUBE=true` if the provider is working but tokens still fail for some videos. This enables the `disable_innertube=1` provider option described in the bgutil provider docs.
+
 1. Build the Docker image:
 
 ```
@@ -134,13 +160,13 @@ http://localhost:8080/process-audio \
 
 # INSTRUCTIONS FOR ROTATING YT-DLP COOKIES
 
-Production reads YouTube cookies from Realtime Database key `yt-dlp-cookies` on each request, so updating that value takes effect without redeploying Cloud Run.
+Production reads YouTube cookies from Realtime Database key `yt-dlp-cookies` on each request, so updating that value takes effect without redeploying Cloud Run. Cookies are still required, but they are no longer sufficient on their own for Cloud Run; the service should also be configured with `YTDLP_POT_PROVIDER_BASE_URL`.
 
 > Follow these instructions: https://github.com/yt-dlp/yt-dlp/wiki/Extractors
 
 1. Open a new private browsing/incognito window and log into YouTube (use the auth@upperroommedia.org google profile password Iam\*\*\*)
 2. In same window and same tab from step 1, navigate to https://www.youtube.com/robots.txt (this should be the only private/incognito browsing tab open)
-3. Export youtube.com cookies from the browser, then close the private browsing/incognito window so that the session is never opened in the browser again. (use the get cookies extension and export all cookies)
+3. Export youtube.com cookies from the browser, then close the private browsing/incognito window so that the session is never opened in the browser again. Use the `Get cookies.txt LOCALLY` extension and export all cookies.
 4. encode the `cookies.txt` by running the following command:
 
 ```zh
@@ -148,6 +174,15 @@ cat cookies.txt | base64 | pbcopy
 ```
 
 5. Navigate (in a normal chrome window) to https://console.firebase.google.com/project/urm-app/database/urm-app-default-rtdb/data and paste the encoded value in the `yt-dlp-cookies` field
+
+## Verifying PO-token setup
+
+After deployment, run a YouTube job and check Cloud Run logs. A healthy setup should show:
+
+- `Applying yt-dlp extractor args for cookie-authenticated YouTube request with PO token provider`
+- a non-empty `poTokenProviderBaseUrl`
+- yt-dlp verbose output that no longer reports `PO Token Providers: none`
+- if yt-dlp still reports `The page needs to be reloaded`, rotate the RTDB cookie value from a fresh private browsing session because the session itself is stale or challenged
 
 ## Download the latest yt-dlp binary
 
