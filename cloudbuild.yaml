@@ -30,6 +30,7 @@ steps:
           --image "${_POT_PROVIDER_IMAGE}" \
           --region "${_REGION}" \
           --platform managed \
+          --port "${_POT_PROVIDER_PORT}" \
           --allow-unauthenticated \
           --min-instances "${_POT_PROVIDER_MIN_INSTANCES}" \
           --max-instances "${_POT_PROVIDER_MAX_INSTANCES}" \
@@ -83,6 +84,7 @@ substitutions:
   _POT_PROVIDER_CPU: '1'
   _POT_PROVIDER_MEMORY: '512Mi'
   _POT_PROVIDER_CONCURRENCY: '1'
+  _POT_PROVIDER_PORT: '4416'
   _POT_PROVIDER_MIN_INSTANCES: '0'
   _POT_PROVIDER_MAX_INSTANCES: '3'
   _POT_PROVIDER_TIMEOUT: '300'
