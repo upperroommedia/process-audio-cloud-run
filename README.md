@@ -134,6 +134,8 @@ http://localhost:8080/process-audio \
 
 # INSTRUCTIONS FOR ROTATING YT-DLP COOKIES
 
+Production reads YouTube cookies from Realtime Database key `yt-dlp-cookies` on each request, so updating that value takes effect without redeploying Cloud Run.
+
 > Follow these instructions: https://github.com/yt-dlp/yt-dlp/wiki/Extractors
 
 1. Open a new private browsing/incognito window and log into YouTube (use the auth@upperroommedia.org google profile password Iam\*\*\*)

@@ -164,23 +164,6 @@ async function prepareCookiesArgs(
     }
   } else {
     cookiesFilePath = path.join(os.tmpdir(), `yt-dlp-cookies-${Date.now()}-${Math.random().toString(36).slice(2)}.txt`);
-    const encodedCookiesFromEnv = process.env.COOKIES;
-
-    if (encodedCookiesFromEnv) {
-      try {
-        const decodedCookies = Buffer.from(encodedCookiesFromEnv, 'base64').toString('utf8');
-        fs.writeFileSync(cookiesFilePath, decodedCookies, 'utf8');
-        log.debug('Cookies file created from COOKIES env');
-        args.push('--cookies', cookiesFilePath);
-        return { args, cookiesFilePath };
-      } catch (err) {
-        log.error('Failed to decode and write cookies file from COOKIES env', { error: err });
-        throw new Error(
-          `Failed to decode and write cookies file from COOKIES env: ${err instanceof Error ? err.message : String(err)}`
-        );
-      }
-    }
-
     const cookiesPath = realtimeDB.ref('yt-dlp-cookies');
     const encodedCookies = await cookiesPath.get();
 
@@ -195,8 +178,8 @@ async function prepareCookiesArgs(
         throw new Error(`Failed to decode and write cookies file: ${err instanceof Error ? err.message : String(err)}`);
       }
     } else {
-      log.error('Cookies not found in COOKIES env or realtimeDB');
-      throw new Error('YouTube cookies not found in COOKIES env or realtimeDB - cookies are required for YouTube downloads');
+      log.error('yt-dlp-cookies not found in realtimeDB');
+      throw new Error('yt-dlp-cookies not found in realtimeDB - cookies are required for YouTube downloads');
     }
   }
 
