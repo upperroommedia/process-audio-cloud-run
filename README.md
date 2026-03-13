@@ -69,7 +69,7 @@ process-audio
 
 ## Deploying to Google Cloud Run
 
-Set `PROCESS_AUDIO_ALERT_RECIPIENTS` on the service to a comma-separated list of alert recipients before deploying if you want runtime failures to queue email notifications.
+Runtime failure alert recipients are injected from the Secret Manager secret `RUNTIME_ALERT_RECIPIENTS` during Cloud Run deploys. The app also supports `PROCESS_AUDIO_ALERT_RECIPIENTS`, `RUNTIME_ALERT_RECIPIENTS`, or `RUNTIME_ALERT_EMAILS` as env var names, but the deploy pipeline now binds the `RUNTIME_ALERT_RECIPIENTS` secret automatically.
 
 YouTube downloads in Cloud Run now assume a separate bgutil PO-token provider service is available. The GitHub Actions deploy workflows for `staging` and `main` now provision that provider automatically through `cloudbuild.yaml` and inject its service URL into `YTDLP_POT_PROVIDER_BASE_URL` on the corresponding `process-audio` Cloud Run service.
 
