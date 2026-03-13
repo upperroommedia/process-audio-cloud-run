@@ -3,6 +3,7 @@ ARG NODE_VERSION=22
 ARG PNPM_VERSION=9.12.3
 ARG YT_DLP_VERSION=2026.03.03
 ARG BGUTIL_YTDLP_POT_PROVIDER_VERSION=1.3.1
+ARG DENO_VERSION=2.2.7
 ARG DEBIAN_MIRROR=https://mirrors.edge.kernel.org/debian
 ARG DEBIAN_SECURITY_MIRROR=https://security.debian.org/debian-security
 ARG DEBIAN_UPDATES_MIRROR=https://mirrors.edge.kernel.org/debian
@@ -46,6 +47,7 @@ RUN pnpm build
 FROM node:${NODE_VERSION}-slim AS production
 ARG YT_DLP_VERSION
 ARG BGUTIL_YTDLP_POT_PROVIDER_VERSION
+ARG DENO_VERSION
 ARG DEBIAN_MIRROR
 ARG DEBIAN_SECURITY_MIRROR
 ARG DEBIAN_UPDATES_MIRROR
@@ -56,6 +58,7 @@ WORKDIR /usr/src/app
 # - python3, make, g++: needed for native Node modules (protobufjs, etc.)
 # - python3-pip: installs plugin-capable yt-dlp + PO token plugin
 # - ffmpeg: includes ffmpeg + ffprobe (dynamically linked, supports DNS)
+# - curl + unzip: install Deno, the preferred yt-dlp JS runtime
 RUN apt-get update -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o Acquire::http::Pipeline-Depth=0 \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
@@ -65,8 +68,12 @@ RUN apt-get update -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o Acqu
     && printf "deb %s bookworm-security main\n" "$DEBIAN_SECURITY_MIRROR" >> /etc/apt/sources.list \
     && printf "deb %s bookworm-updates main\n" "$DEBIAN_UPDATES_MIRROR" >> /etc/apt/sources.list \
     && apt-get update -o Acquire::Retries=3 -o Acquire::https::No-Cache=true -o Acquire::http::Pipeline-Depth=0 \
-    && apt-get install -y --no-install-recommends python3 python3-pip make g++ ffmpeg \
+    && apt-get install -y --no-install-recommends python3 python3-pip make g++ ffmpeg curl unzip \
     && rm -rf /var/lib/apt/lists/*
+
+RUN export DENO_INSTALL=/usr/local \
+    && curl -fsSL https://deno.land/install.sh | sh -s -- v${DENO_VERSION} \
+    && deno --version
 
 # Install plugin-capable yt-dlp and the bgutil PO token provider plugin.
 # The plugin talks to an external bgutil provider over HTTP, configured via

@@ -1,4 +1,5 @@
 import express, { Request } from 'express';
+import { spawnSync } from 'node:child_process';
 import { executeWithTimeout, getAudioSource, getFFmpegPath, logMemoryUsage, validateAddIntroOutroData } from './utils';
 import { ProcessAudioInputType, sermonStatusType, uploadStatus, sermonStatus } from './types';
 import { isAxiosError } from 'axios';
@@ -16,8 +17,40 @@ const app = express();
 app.use(express.json());
 // get the path to the yt-dlp binary
 const ytdlpPath = 'yt-dlp';
+const configuredYtDlpJsRuntime = process.env.YTDLP_JS_RUNTIME?.trim() || 'deno';
 
-logger.info('Service initializing', { ytdlpPath });
+function validateConfiguredYtDlpJsRuntime(): { runtime: string; version: string } {
+  const primaryRuntime = configuredYtDlpJsRuntime.split(',')[0]?.trim().split(':')[0]?.trim() || 'deno';
+  const result = spawnSync(primaryRuntime, ['--version'], { encoding: 'utf8' });
+
+  if (result.error) {
+    throw new Error(
+      `Configured yt-dlp JavaScript runtime "${primaryRuntime}" is not available on PATH: ${result.error.message}`
+    );
+  }
+
+  if (result.status !== 0) {
+    throw new Error(
+      `Configured yt-dlp JavaScript runtime "${primaryRuntime}" failed validation with exit code ${result.status}: ${
+        (result.stderr || result.stdout || '').trim() || 'no output'
+      }`
+    );
+  }
+
+  return {
+    runtime: primaryRuntime,
+    version: (result.stdout || result.stderr || '').trim().split('\n')[0] || 'unknown',
+  };
+}
+
+const ytDlpJsRuntimeInfo = validateConfiguredYtDlpJsRuntime();
+
+logger.info('Service initializing', {
+  ytdlpPath,
+  configuredYtDlpJsRuntime,
+  ytDlpJsRuntime: ytDlpJsRuntimeInfo.runtime,
+  ytDlpJsRuntimeVersion: ytDlpJsRuntimeInfo.version,
+});
 
 logger.info('Loading storage, realtimeDB and firestore');
 const bucket = firebaseAdmin.storage().bucket();
@@ -78,6 +111,7 @@ app.get('/healthz', (req, res) => {
     revision: process.env.K_REVISION || 'local',
     browserFallbackConfigured: !!process.env.YOUTUBE_BROWSER_FALLBACK_URL,
     poTokenProviderConfigured: !!process.env.YTDLP_POT_PROVIDER_BASE_URL,
+    ytDlpJsRuntime: ytDlpJsRuntimeInfo.runtime,
   });
 });
 

@@ -198,7 +198,7 @@ function getYtDlpConcurrentFragments(): string {
 }
 
 function getPreferredYtDlpJsRuntime(): string {
-  return process.env.YTDLP_JS_RUNTIME?.trim() || 'node';
+  return process.env.YTDLP_JS_RUNTIME?.trim() || 'deno';
 }
 
 function getYouTubePublicProviderMaxAttempts(): number {

@@ -60,7 +60,7 @@ YouTube extraction:
 - `YTDLP_SLEEP_REQUESTS_SECONDS`
 - `YTDLP_SLEEP_INTERVAL_SECONDS`
 - `YTDLP_MAX_SLEEP_INTERVAL_SECONDS`
-- `YTDLP_JS_RUNTIME=node`
+- `YTDLP_JS_RUNTIME=deno`
 
 ## Local Development
 
@@ -194,6 +194,7 @@ Recommended production defaults:
 - keep `YTDLP_CONCURRENT_FRAGMENTS=1`
 - keep `YOUTUBE_PUBLIC_PROVIDER_MAX_ATTEMPTS=1`
 - keep `YOUTUBE_COOKIE_PROVIDER_MAX_ATTEMPTS=1`
+- keep `YTDLP_JS_RUNTIME=deno`
 - configure `YOUTUBE_BROWSER_FALLBACK_URL`
 - pin the provider image digest before promoting to production
 - prefer deterministic egress for Cloud Run so outbound IP reputation is measurable
@@ -278,6 +279,7 @@ Healthy signals:
 - `Applying yt-dlp extractor args with PO token provider`
 - `public_provider` attempted first
 - a non-empty `poTokenProviderBaseUrl`
+- `healthz` reports `ytDlpJsRuntime: deno`
 - browser fallback only used after classified public/cookie failure
 - logs showing one access-decision flow rather than repeated provider thrash
 
