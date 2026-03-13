@@ -36,16 +36,20 @@ steps:
         '--platform',
         'managed',
         '--cpu',
-        '2',
+        '${_CPU}',
         '--memory',
-        '4Gi',
+        '${_MEMORY}',
         '--cpu-boost',
-        '--no-cpu-throttling',
+        '--cpu-throttling',
         '--concurrency',
-        '1',
+        '${_CONCURRENCY}',
+        '--min-instances',
+        '${_MIN_INSTANCES}',
         '--max-instances',
-        '10',
-        '--set-env-vars',
+        '${_MAX_INSTANCES}',
+        '--timeout',
+        '${_TIMEOUT}',
+        '--update-env-vars',
         'NODE_ENV=production,FIREBASE_PROJECT_ID=${_FIREBASE_PROJECT_ID},FIREBASE_STORAGE_BUCKET=${_FIREBASE_STORAGE_BUCKET},FIREBASE_DATABASE_URL=${_FIREBASE_DATABASE_URL}',
       ]
 
@@ -61,3 +65,9 @@ substitutions:
   _FIREBASE_PROJECT_ID: 'urm-app'
   _FIREBASE_STORAGE_BUCKET: 'urm-app.appspot.com'
   _FIREBASE_DATABASE_URL: 'https://urm-app-default-rtdb.firebaseio.com/'
+  _CPU: '2'
+  _MEMORY: '4Gi'
+  _CONCURRENCY: '1'
+  _MIN_INSTANCES: '0'
+  _MAX_INSTANCES: '10'
+  _TIMEOUT: '3600'

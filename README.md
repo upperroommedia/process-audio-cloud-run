@@ -78,7 +78,7 @@ gcloud builds submit --tag gcr.io/urm-app/process-audio
 2. Deploy the image:
 
 ```
-gcloud run deploy process-audio --image gcr.io/urm-app/process-audio --region us-central1
+gcloud run deploy process-audio --image gcr.io/urm-app/process-audio --region us-central1 --min-instances 0 --cpu-throttling
 ```
 
 ## Test
