@@ -73,6 +73,12 @@ Set `PROCESS_AUDIO_ALERT_RECIPIENTS` on the service to a comma-separated list of
 
 YouTube downloads in Cloud Run now assume a separate bgutil PO-token provider service is available. Deploy that service first, then set `YTDLP_POT_PROVIDER_BASE_URL` on `process-audio` to the provider URL. This follows the current `yt-dlp` PO Token Guide for `mweb`/GVS token handling.
 
+Production extraction policy:
+
+- public videos: provider-first, no cookies by default
+- gated videos: provider + RTDB cookies
+- hard auth/session failures after cookie escalation: optional browser fallback worker via `YOUTUBE_BROWSER_FALLBACK_URL`
+
 Example provider deployment:
 
 ```bash
@@ -96,6 +102,11 @@ gcloud run deploy process-audio \
 Optional:
 
 - Set `YTDLP_POT_DISABLE_INNERTUBE=true` if the provider is working but tokens still fail for some videos. This enables the `disable_innertube=1` provider option described in the bgutil provider docs.
+- `YTDLP_USE_COOKIES_FOR_PUBLIC_VIDEOS=false` is the default and should stay false unless you are debugging a specific public-video regression.
+- `YTDLP_CONCURRENT_FRAGMENTS=1` is the default to reduce burstiness against YouTube.
+- `YOUTUBE_RETRY_DELAY_MS=1500` controls delay before cookie or browser fallback escalation.
+- `YTDLP_COOKIE_HEALTHCHECK_ENABLED=true` enables a lightweight authenticated probe before cookie-backed attempts.
+- `YOUTUBE_BROWSER_FALLBACK_URL` enables the final browser-backed fallback. The worker should accept a JSON POST body with `action`, `youtubeUrl`, optional `startTime`, optional `duration`, and return either `{ "url": "..." }` for `resolve_audio_url` or `{ "downloadUrl": "...", "ext": "m4a" }` for `download_section`.
 
 1. Build the Docker image:
 
@@ -160,7 +171,7 @@ http://localhost:8080/process-audio \
 
 # INSTRUCTIONS FOR ROTATING YT-DLP COOKIES
 
-Production reads YouTube cookies from Realtime Database key `yt-dlp-cookies` on each request, so updating that value takes effect without redeploying Cloud Run. Cookies are still required, but they are no longer sufficient on their own for Cloud Run; the service should also be configured with `YTDLP_POT_PROVIDER_BASE_URL`.
+Production reads YouTube cookies from Realtime Database key `yt-dlp-cookies` on each request, so updating that value takes effect without redeploying Cloud Run. Cookies are only used when the public provider path indicates account-required or challenged content. The service also stores cookie health and last-attempt details in `yt-dlp-cookies-meta`.
 
 > Follow these instructions: https://github.com/yt-dlp/yt-dlp/wiki/Extractors
 
@@ -175,11 +186,21 @@ cat cookies.txt | base64 | pbcopy
 
 5. Navigate (in a normal chrome window) to https://console.firebase.google.com/project/urm-app/database/urm-app-default-rtdb/data and paste the encoded value in the `yt-dlp-cookies` field
 
+Optional but recommended metadata to store in `yt-dlp-cookies-meta`:
+
+```json
+{
+  "rotatedAt": "2026-03-13T21:30:00.000Z",
+  "sourceAccount": "youtube-service-account@upperroommedia.org"
+}
+```
+
 ## Verifying PO-token setup
 
 After deployment, run a YouTube job and check Cloud Run logs. A healthy setup should show:
 
-- `Applying yt-dlp extractor args for cookie-authenticated YouTube request with PO token provider`
+- `Applying yt-dlp extractor args with PO token provider`
+- public videos should first log a `public_provider` attempt without cookies
 - a non-empty `poTokenProviderBaseUrl`
 - yt-dlp verbose output that no longer reports `PO Token Providers: none`
 - if yt-dlp still reports `The page needs to be reloaded`, rotate the RTDB cookie value from a fresh private browsing session because the session itself is stale or challenged

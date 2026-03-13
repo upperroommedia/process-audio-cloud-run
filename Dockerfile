@@ -72,7 +72,7 @@ RUN apt-get update -o Acquire::Retries=3 -o Acquire::http::No-Cache=true -o Acqu
 # The plugin talks to an external bgutil provider over HTTP, configured via
 # YTDLP_POT_PROVIDER_BASE_URL at runtime.
 RUN python3 -m pip install --break-system-packages --no-cache-dir \
-       "yt-dlp==${YT_DLP_VERSION}" \
+       "yt-dlp[default]==${YT_DLP_VERSION}" \
        "bgutil-ytdlp-pot-provider==${BGUTIL_YTDLP_POT_PROVIDER_VERSION}" \
     && echo "yt-dlp version: $(yt-dlp --version)" \
     && python3 -m pip show bgutil-ytdlp-pot-provider
