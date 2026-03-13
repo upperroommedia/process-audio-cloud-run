@@ -10,6 +10,7 @@
     "build": "pnpm tsc",
     "dev": "just dev",
     "verify:youtube:routing": "NODE_ENV=development node scripts/verify-youtube-routing.js",
+    "verify:youtube:loop": "bash scripts/test-youtube-loop.sh",
     "verify:youtube:policy": "node scripts/verify-youtube-policy.js",
     "verify:alerts": "node scripts/verify-operational-alert-recipients.js"
   },

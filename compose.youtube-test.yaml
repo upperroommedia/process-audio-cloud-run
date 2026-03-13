@@ -1,0 +1,31 @@
+services:
+  server:
+    build:
+      context: .
+    environment:
+      NODE_ENV: development
+      LOG_LEVEL: debug
+      YTDLP_POT_PROVIDER_BASE_URL: http://ytdlp-pot-provider:4416
+      YOUTUBE_BROWSER_FALLBACK_URL: http://browser-fallback:8090/fallback
+      YOUTUBE_BROWSER_FALLBACK_ENABLED: "true"
+    volumes:
+      - ./:/usr/src/app
+    working_dir: /usr/src/app
+    depends_on:
+      browser-fallback:
+        condition: service_started
+      ytdlp-pot-provider:
+        condition: service_started
+
+  browser-fallback:
+    image: node:22-slim
+    working_dir: /usr/src/app
+    command: ["node", "scripts/mock-browser-fallback-server.js"]
+    environment:
+      BROWSER_FALLBACK_PORT: 8090
+      BROWSER_FALLBACK_BASE_URL: http://browser-fallback:8090
+    volumes:
+      - ./:/usr/src/app
+
+  ytdlp-pot-provider:
+    image: docker.io/brainicism/bgutil-ytdlp-pot-provider

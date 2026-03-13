@@ -14,6 +14,67 @@ import trim from './trim';
 import { createLoggerWithContext } from './WinstonLogger';
 import { LogContext, createChildContext, createContext } from './context';
 
+const PROCESS_AUDIO_LOCK_TTL_MS = 30 * 60 * 1000;
+
+async function acquireProcessAudioLock(
+  realtimeDB: Database,
+  sermonId: string,
+  requestId: string,
+  log: ReturnType<typeof createLoggerWithContext>
+): Promise<boolean> {
+  const lockRef = realtimeDB.ref(`processAudioLocks/${sermonId}`);
+  const now = Date.now();
+
+  const result = await lockRef.transaction((current) => {
+    if (current && typeof current === 'object') {
+      const existingRequestId = typeof current.requestId === 'string' ? current.requestId : undefined;
+      const acquiredAt = typeof current.acquiredAt === 'number' ? current.acquiredAt : 0;
+      const expired = !acquiredAt || now - acquiredAt > PROCESS_AUDIO_LOCK_TTL_MS;
+      if (existingRequestId && !expired && existingRequestId !== requestId) {
+        return;
+      }
+    }
+
+    return {
+      requestId,
+      acquiredAt: now,
+      acquiredAtIso: new Date(now).toISOString(),
+    };
+  });
+
+  const acquired = !!result.committed && result.snapshot?.val()?.requestId === requestId;
+  if (!acquired) {
+    log.warn('Another process-audio request already holds the sermon lock', {
+      sermonId,
+      requestId,
+    });
+  }
+  return acquired;
+}
+
+async function releaseProcessAudioLock(
+  realtimeDB: Database,
+  sermonId: string,
+  requestId: string,
+  log: ReturnType<typeof createLoggerWithContext>
+): Promise<void> {
+  const lockRef = realtimeDB.ref(`processAudioLocks/${sermonId}`);
+  try {
+    const snapshot = await lockRef.get();
+    const current = snapshot.val();
+    if (current?.requestId === requestId) {
+      await lockRef.remove();
+      log.debug('Released process-audio sermon lock', { sermonId, requestId });
+    }
+  } catch (error) {
+    log.warn('Failed to release process-audio sermon lock', {
+      sermonId,
+      requestId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
 export const processAudio = async (
   ytdlpPath: string,
   cancelToken: CancelToken,
@@ -36,6 +97,8 @@ export const processAudio = async (
   const contextWithSermonId = ctx ?? createContext(fileName, 'process-audio');
   const log = createLoggerWithContext(contextWithSermonId);
   const tempFiles = new Set<string>();
+  const lockRequestId = contextWithSermonId.requestId;
+  let lockAcquired = false;
 
   log.info('Starting audio processing', {
     fileName,
@@ -115,6 +178,11 @@ export const processAudio = async (
   }
 
   try {
+    lockAcquired = await acquireProcessAudioLock(realtimeDB, fileName, lockRequestId, log);
+    if (!lockAcquired) {
+      throw new Error(`A process-audio request is already running for sermon ${fileName}`);
+    }
+
     if (cancelToken.isCancellationRequested) return;
     await docRef.update({
       status: {
@@ -285,6 +353,9 @@ export const processAudio = async (
     });
     throw error;
   } finally {
+    if (lockAcquired) {
+      await releaseProcessAudioLock(realtimeDB, fileName, lockRequestId, log);
+    }
     await realtimeDB.ref(`addIntroOutro/${fileName}`).remove().catch((err) => {
       log.error('Failed to remove progress reference from realtimeDB', {
         error: err instanceof Error ? err.message : String(err),

@@ -8,6 +8,14 @@ export type YouTubeFailureClass =
   | 'browser_fallback_failed'
   | 'unknown_youtube_extractor_failure';
 
+export type YouTubeAlertCode =
+  | 'public_ip_or_reputation_block'
+  | 'cookie_session_stale'
+  | 'account_required_no_valid_session'
+  | 'browser_fallback_failed'
+  | 'provider_unhealthy'
+  | 'youtube_runtime_failure';
+
 export function classifyYouTubeFailure(message: string, mode: YouTubeExtractionMode): YouTubeFailureClass {
   const lower = message.toLowerCase();
 
@@ -92,5 +100,23 @@ export function annotateYouTubeFailure(
       return mode === 'browser_fallback'
         ? `${message} Browser fallback failed with an unknown extraction error.`
         : `${message} yt-dlp failed with an unknown YouTube extraction error.`;
+  }
+}
+
+export function toYouTubeAlertCode(failureClass: YouTubeFailureClass): YouTubeAlertCode {
+  switch (failureClass) {
+    case 'provider_missing_or_unhealthy':
+      return 'provider_unhealthy';
+    case 'public_path_bot_blocked':
+      return 'public_ip_or_reputation_block';
+    case 'cookie_session_stale_or_challenged':
+      return 'cookie_session_stale';
+    case 'account_required_content':
+      return 'account_required_no_valid_session';
+    case 'browser_fallback_failed':
+      return 'browser_fallback_failed';
+    case 'unknown_youtube_extractor_failure':
+    default:
+      return 'youtube_runtime_failure';
   }
 }

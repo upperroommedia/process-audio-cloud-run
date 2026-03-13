@@ -10,6 +10,7 @@ import firebaseAdmin from './firebaseAdmin';
 import logger, { createLoggerWithContext } from './WinstonLogger';
 import { createContext } from './context';
 import { emitOperationalAlertEmail } from './operationalAlerts';
+import { classifyYouTubeFailure, toYouTubeAlertCode } from './youtubeExtractionPolicy';
 
 const app = express();
 app.use(express.json());
@@ -68,6 +69,16 @@ app.get('/', (req, res) => {
     outroUrl (string)
   }
   `);
+});
+
+app.get('/healthz', (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'process-audio-cloud-run',
+    revision: process.env.K_REVISION || 'local',
+    browserFallbackConfigured: !!process.env.YOUTUBE_BROWSER_FALLBACK_URL,
+    poTokenProviderConfigured: !!process.env.YTDLP_POT_PROVIDER_BASE_URL,
+  });
 });
 
 app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioInputType }>, res) => {
@@ -145,12 +156,23 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
       error: message,
       errorType: e?.constructor?.name,
       stack: e instanceof Error ? e.stack : undefined,
+      serviceRevision: process.env.K_REVISION || 'local',
+      browserFallbackConfigured: !!process.env.YOUTUBE_BROWSER_FALLBACK_URL,
+      poTokenProviderBaseUrl: process.env.YTDLP_POT_PROVIDER_BASE_URL || null,
     });
+
+    const youtubeFailureClass =
+      audioSource.type === 'YouTubeUrl' ? classifyYouTubeFailure(message, 'public_provider') : undefined;
+    const alertCode = youtubeFailureClass ? toYouTubeAlertCode(youtubeFailureClass) : 'PROCESS_AUDIO_RUNTIME_FAILURE';
+    const alertSummary =
+      youtubeFailureClass && alertCode !== 'youtube_runtime_failure'
+        ? `process-audio Cloud Run request failed during YouTube extraction (${alertCode}).`
+        : 'process-audio Cloud Run request failed while processing sermon audio.';
 
     try {
       await emitOperationalAlertEmail({
-        alertCode: 'PROCESS_AUDIO_RUNTIME_FAILURE',
-        summary: 'process-audio Cloud Run request failed while processing sermon audio.',
+        alertCode,
+        summary: alertSummary,
         error: e,
         sermonId: data?.id,
         context: {
@@ -158,6 +180,10 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
           operation: ctx.operation,
           audioSourceType: audioSource.type,
           audioSource: audioSource.source,
+          serviceRevision: process.env.K_REVISION || 'local',
+          browserFallbackConfigured: !!process.env.YOUTUBE_BROWSER_FALLBACK_URL,
+          poTokenProviderBaseUrl: process.env.YTDLP_POT_PROVIDER_BASE_URL || null,
+          youtubeFailureClass: youtubeFailureClass ?? null,
           requesterEmail: request.auth?.email ?? null,
           requesterUid: request.auth?.sub ?? null,
           requesterName: request.auth?.name ?? null,
