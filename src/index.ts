@@ -1,4 +1,5 @@
 import express, { Request } from 'express';
+import { spawnSync } from 'node:child_process';
 import { executeWithTimeout, getAudioSource, getFFmpegPath, logMemoryUsage, validateAddIntroOutroData } from './utils';
 import { ProcessAudioInputType, sermonStatusType, uploadStatus, sermonStatus } from './types';
 import { isAxiosError } from 'axios';
@@ -9,13 +10,47 @@ import { TIMEOUT_SECONDS } from './consts';
 import firebaseAdmin from './firebaseAdmin';
 import logger, { createLoggerWithContext } from './WinstonLogger';
 import { createContext } from './context';
+import { emitOperationalAlertEmail } from './operationalAlerts';
+import { classifyYouTubeFailure, toYouTubeAlertCode } from './youtubeExtractionPolicy';
 
 const app = express();
 app.use(express.json());
 // get the path to the yt-dlp binary
 const ytdlpPath = 'yt-dlp';
+const configuredYtDlpJsRuntime = process.env.YTDLP_JS_RUNTIME?.trim() || 'deno';
 
-logger.info('Service initializing', { ytdlpPath });
+function validateConfiguredYtDlpJsRuntime(): { runtime: string; version: string } {
+  const primaryRuntime = configuredYtDlpJsRuntime.split(',')[0]?.trim().split(':')[0]?.trim() || 'deno';
+  const result = spawnSync(primaryRuntime, ['--version'], { encoding: 'utf8' });
+
+  if (result.error) {
+    throw new Error(
+      `Configured yt-dlp JavaScript runtime "${primaryRuntime}" is not available on PATH: ${result.error.message}`
+    );
+  }
+
+  if (result.status !== 0) {
+    throw new Error(
+      `Configured yt-dlp JavaScript runtime "${primaryRuntime}" failed validation with exit code ${result.status}: ${
+        (result.stderr || result.stdout || '').trim() || 'no output'
+      }`
+    );
+  }
+
+  return {
+    runtime: primaryRuntime,
+    version: (result.stdout || result.stderr || '').trim().split('\n')[0] || 'unknown',
+  };
+}
+
+const ytDlpJsRuntimeInfo = validateConfiguredYtDlpJsRuntime();
+
+logger.info('Service initializing', {
+  ytdlpPath,
+  configuredYtDlpJsRuntime,
+  ytDlpJsRuntime: ytDlpJsRuntimeInfo.runtime,
+  ytDlpJsRuntimeVersion: ytDlpJsRuntimeInfo.version,
+});
 
 logger.info('Loading storage, realtimeDB and firestore');
 const bucket = firebaseAdmin.storage().bucket();
@@ -67,6 +102,17 @@ app.get('/', (req, res) => {
     outroUrl (string)
   }
   `);
+});
+
+app.get('/healthz', (req, res) => {
+  res.status(200).json({
+    ok: true,
+    service: 'process-audio-cloud-run',
+    revision: process.env.K_REVISION || 'local',
+    browserFallbackConfigured: !!process.env.YOUTUBE_BROWSER_FALLBACK_URL,
+    poTokenProviderConfigured: !!process.env.YTDLP_POT_PROVIDER_BASE_URL,
+    ytDlpJsRuntime: ytDlpJsRuntimeInfo.runtime,
+  });
 });
 
 app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioInputType }>, res) => {
@@ -144,7 +190,44 @@ app.post('/process-audio', async (request: Request<{}, {}, { data: ProcessAudioI
       error: message,
       errorType: e?.constructor?.name,
       stack: e instanceof Error ? e.stack : undefined,
+      serviceRevision: process.env.K_REVISION || 'local',
+      browserFallbackConfigured: !!process.env.YOUTUBE_BROWSER_FALLBACK_URL,
+      poTokenProviderBaseUrl: process.env.YTDLP_POT_PROVIDER_BASE_URL || null,
     });
+
+    const youtubeFailureClass =
+      audioSource.type === 'YouTubeUrl' ? classifyYouTubeFailure(message, 'public_provider') : undefined;
+    const alertCode = youtubeFailureClass ? toYouTubeAlertCode(youtubeFailureClass) : 'PROCESS_AUDIO_RUNTIME_FAILURE';
+    const alertSummary =
+      youtubeFailureClass && alertCode !== 'youtube_runtime_failure'
+        ? `process-audio Cloud Run request failed during YouTube extraction (${alertCode}).`
+        : 'process-audio Cloud Run request failed while processing sermon audio.';
+
+    try {
+      await emitOperationalAlertEmail({
+        alertCode,
+        summary: alertSummary,
+        error: e,
+        sermonId: data?.id,
+        context: {
+          requestId: ctx.requestId,
+          operation: ctx.operation,
+          audioSourceType: audioSource.type,
+          audioSource: audioSource.source,
+          serviceRevision: process.env.K_REVISION || 'local',
+          browserFallbackConfigured: !!process.env.YOUTUBE_BROWSER_FALLBACK_URL,
+          poTokenProviderBaseUrl: process.env.YTDLP_POT_PROVIDER_BASE_URL || null,
+          youtubeFailureClass: youtubeFailureClass ?? null,
+          requesterEmail: request.auth?.email ?? null,
+          requesterUid: request.auth?.sub ?? null,
+          requesterName: request.auth?.name ?? null,
+        },
+      });
+    } catch (alertError) {
+      log.error('Failed to queue operational alert email', {
+        error: alertError instanceof Error ? alertError.message : String(alertError),
+      });
+    }
 
     try {
       await docRef.update({

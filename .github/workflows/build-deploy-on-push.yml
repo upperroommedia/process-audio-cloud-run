@@ -24,5 +24,7 @@ jobs:
       # Step 3: Trigger Cloud Build
       - name: Trigger Cloud Build
         run: |
-          gcloud beta builds submit --config cloudbuild.yaml \
-              --substitutions=TRIGGER_NAME="github-actions",BRANCH_NAME="${{ github.ref_name }}",COMMIT_SHA="${{ github.sha }}",REPO_NAME="${{ github.repository }}",REPO_FULL_NAME="${{ github.repository }}",TAG_NAME="${{ github.ref_name }}",REF_NAME="${{ github.ref_name }}"
+          gcloud beta builds submit \
+              --project=urm-app \
+              --config cloudbuild.yaml \
+              --substitutions=TRIGGER_NAME="github-actions",BRANCH_NAME="${{ github.ref_name }}",COMMIT_SHA="${{ github.sha }}",REPO_NAME="${{ github.repository }}",REPO_FULL_NAME="${{ github.repository }}",TAG_NAME="${{ github.ref_name }}",REF_NAME="${{ github.ref_name }}",_PROJECT_ID="urm-app",_REGION="us-central1",_AR_REPO="process-audio-repo",_IMAGE_NAME="process-audio",_SERVICE_NAME="process-audio",_FIREBASE_PROJECT_ID="urm-app",_FIREBASE_STORAGE_BUCKET="urm-app.appspot.com",_FIREBASE_DATABASE_URL="https://urm-app-default-rtdb.firebaseio.com/",_CPU="2",_MEMORY="4Gi",_CONCURRENCY="1",_MIN_INSTANCES="0",_MAX_INSTANCES="10",_TIMEOUT="3600"

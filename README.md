@@ -1,150 +1,350 @@
 # Process Audio
 
-This service processes audio for the Upper Room Media Uploader
+Cloud Run service for processing uploaded audio and YouTube-backed sermon audio for Upper Room Media.
+
+## YouTube Extraction Model
+
+The YouTube path now follows a strict access order:
+
+1. `public_provider`
+   Uses `yt-dlp` with the bgutil PO-token provider and no cookies.
+2. `cookie_provider`
+   Only used when the public path indicates auth is required and the RTDB cookie session is healthy.
+3. `browser_fallback`
+   Final authority when the public path is challenged or the cookie session is stale/challenged.
+
+This is intentional. A Cloud Run IP challenge is not fixed by retrying `yt-dlp` more aggressively, and stale cookies are not a durable recovery path.
+
+## What Changed
+
+- Request-scoped YouTube access decisions are cached so one sermon request does not repeatedly probe YouTube after a known failure.
+- Cookie metadata in RTDB now tracks validation state and a circuit breaker.
+- Cookie stale/challenged failures open the breaker and skip further cookie attempts until rotation.
+- Operational alerts now classify YouTube failures into:
+  - `public_ip_or_reputation_block`
+  - `cookie_session_stale`
+  - `account_required_no_valid_session`
+  - `browser_fallback_failed`
+  - `provider_unhealthy`
+- The service exposes `GET /healthz`.
+- A local Docker validation loop now gates changes before deployment.
 
 ## Prerequisites
 
-- Google Cloud SDK
 - Docker
-- A Google Cloud Platform project
+- `pnpm`
+- Google Cloud SDK
+- A GCP project with the required service accounts and secrets
 
-### Generate yt-dlp-cookies in realtimeDB
+## Environment Variables
 
-1. Make sure to have the proper variables in a `.env` file colocated with the `yt-dlp-cookies-script.sh`
+Core runtime:
 
-```
-EMAIL=""
-PASSWORD=""
-FIREBASE_API_KEY=""
-FIREBASE_DB_URL="https://example.firebaseio.com/"
-```
+- `GOOGLE_APPLICATION_CREDENTIALS`
+- `PROCESS_AUDIO_BUCKET`
+- `RUNTIME_ALERT_RECIPIENTS` or the Secret Manager binding used by deploy
 
-2. To run this script on a schedule (mac) copy the `com.user.ytdlp-script.plist` to `~/Library/LaunchAgents/com.user.ytdlp-script.plist` and edit the `path-to-script` and `path-to-working-directory`
+YouTube extraction:
 
-- load the plist into launchctl using: `launchctl load ~/Library/LaunchAgents/com.user.ytdlp-script.plist`
-- if you make any edits make sure to `unload` then `load` again to update
-- you can verify that the script is running with `launchctl list | grep com.user.ytdlp-script`
+- `YTDLP_POT_PROVIDER_BASE_URL`
+- `YOUTUBE_BROWSER_FALLBACK_URL`
+- `YOUTUBE_BROWSER_FALLBACK_ENABLED`
+- `YOUTUBE_BROWSER_FALLBACK_TIMEOUT_MS`
+- `YTDLP_USE_COOKIES_FOR_PUBLIC_VIDEOS=false`
+- `YTDLP_CONCURRENT_FRAGMENTS=1`
+- `YTDLP_COOKIE_HEALTHCHECK_ENABLED=true`
+- `YOUTUBE_RETRY_DELAY_MS=1500`
+- `YOUTUBE_PUBLIC_PROVIDER_MAX_ATTEMPTS=1`
+- `YOUTUBE_COOKIE_PROVIDER_MAX_ATTEMPTS=1`
+- `YOUTUBE_COOKIE_CIRCUIT_BREAKER_MINUTES=30`
+- `YTDLP_SLEEP_REQUESTS_SECONDS`
+- `YTDLP_SLEEP_INTERVAL_SECONDS`
+- `YTDLP_MAX_SLEEP_INTERVAL_SECONDS`
+- `YTDLP_JS_RUNTIME=deno`
 
 ## Local Development
 
-1. Make sure you start docker on your machine (open docker from apps)
-2. Run `docker build --tag process-audio .` to build the process-audio image
-3. Run
+Build the image:
 
+```bash
+docker build --tag process-audio .
 ```
+
+Run the container against real Firebase:
+
+```bash
 docker run \
--e GOOGLE_APPLICATION_CREDENTIALS="/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json" \
--v /Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json:/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json \
---env-file .env \
--p 8080:8080 \
-process-audio
+  -e GOOGLE_APPLICATION_CREDENTIALS="/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json" \
+  -v /Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json:/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json \
+  --env-file .env \
+  -p 8080:8080 \
+  process-audio
 ```
 
-to run the image with access to the 8080 port. Replace the path of the Credentials with the appropriate path
+Run the container against the Firebase emulator:
 
-### Using Firebase Emulator with Docker
-
-When running the Docker container with the Firebase emulator, you need to configure the container to connect to the emulator running on your host machine:
-
-```
+```bash
 docker run \
--e NODE_ENV=development \
--e GOOGLE_APPLICATION_CREDENTIALS="/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json" \
--e FIREBASE_EMULATOR_HOST="host.docker.internal" \
--e FIRESTORE_EMULATOR_PORT="8081" \
--e FIREBASE_AUTH_EMULATOR_PORT="9099" \
--e FIREBASE_STORAGE_EMULATOR_PORT="9199" \
--e FIREBASE_DATABASE_EMULATOR_PORT="9000" \
--v /Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json:/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json \
---env-file .env \
--p 8080:8080 \
-process-audio
+  -e NODE_ENV=development \
+  -e GOOGLE_APPLICATION_CREDENTIALS="/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json" \
+  -e FIREBASE_EMULATOR_HOST="host.docker.internal" \
+  -e FIRESTORE_EMULATOR_PORT="8081" \
+  -e FIREBASE_AUTH_EMULATOR_PORT="9099" \
+  -e FIREBASE_STORAGE_EMULATOR_PORT="9199" \
+  -e FIREBASE_DATABASE_EMULATOR_PORT="9000" \
+  -v /Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json:/Users/yasaad/Downloads/urm-app-firebase-adminsdk-p39zx-aec4d133ad.json \
+  --env-file .env \
+  -p 8080:8080 \
+  process-audio
 ```
 
-**Note:**
+## Local Docker Validation Loop
 
-- `FIREBASE_EMULATOR_HOST` should be `host.docker.internal` on Mac/Windows, or your host machine's IP address on Linux
-- Make sure your Firebase emulator ports match the values you set (defaults: Firestore 8081, Auth 9099, Storage 9199, Database 9000)
-- If your app uses port 8080, the Firestore emulator will typically use a different port (check your emulator startup logs)
+The repo now contains a reproducible YouTube validation harness that mirrors the production topology:
+
+- `server`
+- `ytdlp-pot-provider`
+- `browser-fallback`
+- deterministic fake `yt-dlp` scenarios for negative-path tests
+
+Run the loop:
+
+```bash
+pnpm verify:youtube:loop
+```
+
+Equivalent direct command:
+
+```bash
+bash scripts/test-youtube-loop.sh
+```
+
+The loop validates:
+
+- public-path success without cookies
+- stale-cookie classification and circuit-breaker behavior
+- browser fallback for direct URL resolution
+- browser fallback for section downloads
+
+Artifacts are written to `.tmp/youtube-loop/`.
+
+Deployment rule:
+
+- Do not deploy YouTube extraction changes until the local loop passes.
+
+## Local Test Topology
+
+`compose.youtube-test.yaml` adds:
+
+- `browser-fallback`
+  - mock service implementing `POST /fallback`
+  - `GET /healthz`
+  - `GET /session-status`
+- `ytdlp-pot-provider`
+  - bgutil provider container
+- `server`
+  - same app container with YouTube env vars wired for the local loop
+
+The validation harness uses deterministic scenarios for:
+
+- public success
+- public bot challenge
+- stale cookie failure
+- provider unavailable
+- browser fallback recovery
+
+Keep at least one live smoke test in staging, but use the deterministic local loop as the default regression gate.
 
 ## Deploying to Google Cloud Run
 
-1. Build the Docker image:
+Runtime failure alert recipients are injected from the Secret Manager secret `RUNTIME_ALERT_RECIPIENTS` during Cloud Run deploys. The app also supports `PROCESS_AUDIO_ALERT_RECIPIENTS`, `RUNTIME_ALERT_RECIPIENTS`, or `RUNTIME_ALERT_EMAILS`, but deploy should bind `RUNTIME_ALERT_RECIPIENTS`.
 
-```
-gcloud builds submit --tag gcr.io/urm-app/process-audio
-```
+The production YouTube stack assumes:
 
-2. Deploy the image:
+- `process-audio` runs as the orchestrator on Cloud Run
+- a separate bgutil PO-token provider service is deployed
+- an optional but recommended browser fallback worker is deployed on a stateful host with:
+  - persistent Chromium profile storage
+  - a dedicated YouTube service account
+  - stable outbound IP
 
-```
-gcloud run deploy process-audio --image gcr.io/urm-app/process-audio --region us-central1
-```
+Example PO-token provider deployment:
 
-## Test
-
-GET
-
-```
-curl \
--H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-https://process-audio-yshbijirxq-uc.a.run.app
+```bash
+gcloud run deploy ytdlp-pot-provider \
+  --image docker.io/brainicism/bgutil-ytdlp-pot-provider \
+  --region us-central1 \
+  --allow-unauthenticated
 ```
 
-POST
+Deploy `process-audio` with the provider URL:
 
-```
-curl \
--X POST \
--H 'Content-Type: application/json' \
--H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-https://process-audio-yshbijirxq-uc.a.run.app/process-audio \
--d '{
-    "data":{
-                "deleteOriginal": true,
-                "id": "fbff2e40-ff55-4ce0-95b8-60ed455188af",
-                "introUrl": "https://firebasestorage.googleapis.com/v0/b/urm-app.appspot.com/o/intros%2FBible%20Studies_intro.mp3?alt=media&token=21e3ed85-c569-4609-9f71-258f2cadc491",
-                "outroUrl": "https://firebasestorage.googleapis.com/v0/b/urm-app.appspot.com/o/outros%2Fdefault_outro.mp3?alt=media&token=c0748088-dc68-4619-a9a7-ec4f6272f055",
-                "duration": 713.5,
-                "startTime": 2570.5,
-                "youtubeUrl": "https://www.youtube.com/watch?v=MVQ_TCo28jU"
-            }
-}'
+```bash
+gcloud run deploy process-audio \
+  --image gcr.io/urm-app/process-audio \
+  --region us-central1 \
+  --min-instances 0 \
+  --cpu-throttling \
+  --set-env-vars YTDLP_POT_PROVIDER_BASE_URL=https://ytdlp-pot-provider-<hash>-uc.a.run.app
 ```
 
-Local
+Recommended production defaults:
 
-```
-curl \
--X POST \
--H 'Content-Type: application/json' \
--H "Authorization: Bearer $(gcloud auth print-identity-token)" \
-http://localhost:8080/process-audio \
--d '{
-    "data":{
-                "id": "ID",
-                "youtubeUrl": "https://www.youtube.com/watch?v=MUIw7qrSW6k",
-                "startTime": 5155,
-                "duration": 1320
-            }
-}'
-```
+- keep `YTDLP_USE_COOKIES_FOR_PUBLIC_VIDEOS=false`
+- keep `YTDLP_CONCURRENT_FRAGMENTS=1`
+- keep `YOUTUBE_PUBLIC_PROVIDER_MAX_ATTEMPTS=1`
+- keep `YOUTUBE_COOKIE_PROVIDER_MAX_ATTEMPTS=1`
+- keep `YTDLP_JS_RUNTIME=deno`
+- configure `YOUTUBE_BROWSER_FALLBACK_URL`
+- pin the provider image digest before promoting to production
+- prefer deterministic egress for Cloud Run so outbound IP reputation is measurable
 
-# INSTRUCTIONS FOR ROTATING YT-DLP COOKIES
+Optional:
 
-> Follow these instructions: https://github.com/yt-dlp/yt-dlp/wiki/Extractors
+- Set `YTDLP_POT_DISABLE_INNERTUBE=true` if the provider is healthy but token usage still fails for a subset of videos.
 
-1. Open a new private browsing/incognito window and log into YouTube (use the auth@upperroommedia.org google profile password Iam\*\*\*)
-2. In same window and same tab from step 1, navigate to https://www.youtube.com/robots.txt (this should be the only private/incognito browsing tab open)
-3. Export youtube.com cookies from the browser, then close the private browsing/incognito window so that the session is never opened in the browser again. (use the get cookies extension and export all cookies)
-4. encode the `cookies.txt` by running the following command:
+## Browser Fallback Contract
 
-```zh
+The browser worker endpoint referenced by `YOUTUBE_BROWSER_FALLBACK_URL` must accept JSON `POST` requests.
+
+Supported actions:
+
+- `action=resolve_audio_url`
+  - request body: `youtubeUrl`
+  - response body: `{ "url": "...", "format": "m4a", "duration": 123 }`
+- `action=download_section`
+  - request body: `youtubeUrl`, `startTime`, `duration`
+  - response body: `{ "downloadUrl": "...", "ext": "m4a" }`
+
+Operational endpoints expected on the worker:
+
+- `GET /healthz`
+- `GET /session-status`
+
+## Cookie Rotation Workflow
+
+Production reads YouTube cookies from RTDB key `yt-dlp-cookies` and metadata from `yt-dlp-cookies-meta`.
+
+Cookies are now an emergency compatibility layer, not the primary recovery path for Cloud Run IP challenges.
+
+Use a dedicated YouTube service account only. Do not use a human browsing profile.
+
+Required workflow:
+
+1. Open a fresh private/incognito window.
+2. Log into YouTube with the dedicated service account only.
+3. In the same tab, navigate to [https://www.youtube.com/robots.txt](https://www.youtube.com/robots.txt).
+4. Export `youtube.com` cookies using a local cookies exporter.
+5. Close the private/incognito window immediately.
+6. Never reopen or browse with that session again.
+7. Base64-encode the exported `cookies.txt`.
+8. Update `yt-dlp-cookies` in RTDB.
+9. Update `yt-dlp-cookies-meta` atomically with the new metadata.
+
+Base64 command on macOS:
+
+```bash
 cat cookies.txt | base64 | pbcopy
 ```
 
-5. Navigate (in a normal chrome window) to https://console.firebase.google.com/project/urm-app/database/urm-app-default-rtdb/data and paste the encoded value in the `yt-dlp-cookies` field
+Recommended metadata payload:
 
-## Download the latest yt-dlp binary
+```json
+{
+  "rotatedAt": "2026-03-13T21:30:00.000Z",
+  "exportedAt": "2026-03-13T21:29:30.000Z",
+  "exportMethod": "Get cookies.txt LOCALLY",
+  "profileType": "incognito",
+  "sourceAccount": "youtube-service-account@upperroommedia.org",
+  "cookieHash": "sha256:<hash>",
+  "lastHealthStatus": "unknown",
+  "consecutiveFailures": 0,
+  "disabledUntil": null
+}
+```
 
-https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp
+Important rules:
+
+- Manual RTDB pasting is emergency fallback only.
+- Preferred steady state is a controlled cookie-rotation utility that uploads both `yt-dlp-cookies` and `yt-dlp-cookies-meta` together.
+- If RTDB metadata shows `disabledUntil` in the future, the cookie circuit breaker is open and the service will skip cookie-backed attempts.
+- If a cookie healthcheck fails with `The page needs to be reloaded`, rotate the session instead of retrying.
+
+## Verifying the Production Setup
+
+After deployment, run a YouTube job and inspect logs.
+
+Healthy signals:
+
+- `Applying yt-dlp extractor args with PO token provider`
+- `public_provider` attempted first
+- a non-empty `poTokenProviderBaseUrl`
+- `healthz` reports `ytDlpJsRuntime: deno`
+- browser fallback only used after classified public/cookie failure
+- logs showing one access-decision flow rather than repeated provider thrash
+
+Failure interpretation:
+
+- `public_ip_or_reputation_block`
+  - Cloud Run public path was challenged; verify outbound IP reputation and browser fallback health
+- `cookie_session_stale`
+  - rotate cookies from a fresh private session
+- `account_required_no_valid_session`
+  - content requires auth and there is no usable cookie/browser session
+- `provider_unhealthy`
+  - check bgutil provider deployment, readiness, and revision
+- `browser_fallback_failed`
+  - check worker `healthz`, `session-status`, persistent profile storage, and account login state
+
+## Cloud Run Smoke Test
+
+GET:
+
+```bash
+curl \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  https://process-audio-yshbijirxq-uc.a.run.app
+```
+
+POST:
+
+```bash
+curl \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  https://process-audio-yshbijirxq-uc.a.run.app/process-audio \
+  -d '{
+    "data": {
+      "deleteOriginal": true,
+      "id": "fbff2e40-ff55-4ce0-95b8-60ed455188af",
+      "introUrl": "https://firebasestorage.googleapis.com/v0/b/urm-app.appspot.com/o/intros%2FBible%20Studies_intro.mp3?alt=media&token=21e3ed85-c569-4609-9f71-258f2cadc491",
+      "outroUrl": "https://firebasestorage.googleapis.com/v0/b/urm-app.appspot.com/o/outros%2Fdefault_outro.mp3?alt=media&token=c0748088-dc68-4619-a9a7-ec4f6272f055",
+      "duration": 713.5,
+      "startTime": 2570.5,
+      "youtubeUrl": "https://www.youtube.com/watch?v=MVQ_TCo28jU"
+    }
+  }'
+```
+
+Local:
+
+```bash
+curl \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+  http://localhost:8080/process-audio \
+  -d '{
+    "data": {
+      "id": "ID",
+      "youtubeUrl": "https://www.youtube.com/watch?v=MUIw7qrSW6k",
+      "startTime": 5155,
+      "duration": 1320
+    }
+  }'
+```
+
+## Download the Latest yt-dlp Binary
+
+[https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp](https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp)

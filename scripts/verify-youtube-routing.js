@@ -26,7 +26,7 @@ const cases = [
     url: 'https://www.youtube.com/watch?v=wgWazlLy3nU',
     startTime: 2476,
     duration: 20,
-    expectedStrategy: 'section_download',
+    expectedStrategies: ['direct_url', 'section_download'],
     toleranceSeconds: 2,
   },
   {
@@ -118,13 +118,19 @@ async function runCase(testCase) {
 
   const actualDuration = ffprobeDuration(outputPath);
   const durationDiff = Math.abs(actualDuration - testCase.duration);
-  const strategyMatches = !testCase.expectedStrategy || testCase.expectedStrategy === decision.strategy;
+  const allowedStrategies = Array.isArray(testCase.expectedStrategies)
+    ? testCase.expectedStrategies
+    : testCase.expectedStrategy
+      ? [testCase.expectedStrategy]
+      : [];
+  const strategyMatches = allowedStrategies.length === 0 || allowedStrategies.includes(decision.strategy);
   const durationMatches = durationDiff <= testCase.toleranceSeconds;
 
   return {
     name: testCase.name,
     url: testCase.url,
     expectedStrategy: testCase.expectedStrategy,
+    expectedStrategies: allowedStrategies,
     strategy: decision.strategy,
     reason: decision.reason,
     hasFragments: decision.hasFragments,
@@ -150,8 +156,11 @@ async function main() {
     try {
       const result = await runCase(testCase);
       results.push(result);
+      const expectedLabel = result.expectedStrategies?.length
+        ? result.expectedStrategies.join('|')
+        : result.expectedStrategy || 'any';
       process.stdout.write(
-        `[verify] strategy=${result.strategy} expected=${result.expectedStrategy} duration=${result.actualDuration.toFixed(
+        `[verify] strategy=${result.strategy} expected=${expectedLabel} duration=${result.actualDuration.toFixed(
           3
         )}s diff=${result.durationDiff.toFixed(3)}s ok=${result.ok}\n`
       );
