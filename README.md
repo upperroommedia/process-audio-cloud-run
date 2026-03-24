@@ -1,5 +1,18 @@
 # Process Audio
 
+## Deprecated Source Of Truth
+
+This repository is no longer the deployment source for `process-audio`.
+
+The live service now ships from the monolith at `upper-room-media/web-app`:
+
+- service code: `apps/process-audio`
+- callable/task integration: `functions-media`
+- staging/prod deployment automation: the monolith selective deploy workflows
+
+The old GitHub Actions deployment workflows in this repo have been removed on purpose.
+Do not re-enable deploys here.
+
 Cloud Run service for processing uploaded audio and YouTube-backed sermon audio for Upper Room Media.
 
 ## YouTube Extraction Model
